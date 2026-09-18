@@ -44,6 +44,7 @@
 #define LORA_DIO1_PIN        39     // SX126X IRQ (RxDone/TxDone)
 #define LORA_BUSY_PIN        40     // SX126X BUSY
 #define LORA_RST_PIN         42     // SX126X NRST
+#define LORA_RXEN_PIN        38     // RF 스위치 RX enable (수신 중 HIGH). TX 경로는 SX1262 DIO2가 제어
 #define LORA_TCXO_V          1.8f   // Wio-SX1262 TCXO ref voltage (DIO3), volts
 #define LORA_MAX_LINE_BYTES  60     // chunk 한 줄 최대 바이트 (UTF-8 safe) = 1 LoRa packet 본문
 

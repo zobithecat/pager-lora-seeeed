@@ -61,6 +61,7 @@
 #define LORA_DIO1_PIN        39
 #define LORA_BUSY_PIN        40
 #define LORA_RST_PIN         42
+#define LORA_RXEN_PIN        38     // RF 스위치 RX enable (수신 중 HIGH). TX 경로는 SX1262 DIO2가 제어
 #define LORA_TCXO_V          1.8f
 #define LORA_MAX_LINE_BYTES  60     // 프로토콜 한 줄 = 1 LoRa 패킷 본문 상한 (§5)
 

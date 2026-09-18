@@ -12,6 +12,13 @@
 extern uint32_t g_now;
 inline uint32_t millis() { return g_now; }
 inline void delay(uint32_t ms) { g_now += ms; }
+#define INPUT 0
+#define OUTPUT 1
+#define LOW 0
+#define HIGH 1
+inline void pinMode(int, int) {}
+inline void digitalWrite(int, int) {}
+inline int digitalRead(int) { return 0; }
 inline uint32_t esp_random() { static uint32_t x = 12345; x = x * 1664525u + 1013904223u; return x >> 8; }
 class String {
  public:

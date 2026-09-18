@@ -287,9 +287,29 @@ static size_t lora_emit(const String& line, uint8_t ttl) {
 // ---------------------------------------------------------------------------
 // Init / diagnostics
 // ---------------------------------------------------------------------------
+// SX1262 하드웨어 리셋을 RadioLib에 맡기지 않고 직접 한다.
+// RadioLib(7.7.1)의 reset()은 NRST를 올린 직후 곧바로 BUSY를 보고 명령을 보내는데, XIAO ESP32S3
+// 에서는 칩이 BUSY를 올리기도 전에 그 검사가 통과해 부팅 중인 칩에 명령이 들어간다. 그러면
+// 버전 레지스터가 쓰레기/0으로 읽혀 begin()이 -2(CHIP_NOT_FOUND)로 죽는다 — 10번 재시도해도
+// 매번 같은 레이스를 반복한다. (2026-09-18 실측: 기본 리셋 → -2, 아래 시퀀스 → 매번 0.
+// RadioLib SPI 디버그를 켜면 print 지연 덕에 우연히 성공해서 더 헷갈린다.)
+static void radio_hw_reset() {
+  pinMode(LORA_BUSY_PIN, INPUT);
+  pinMode(LORA_RST_PIN, OUTPUT);
+  digitalWrite(LORA_RST_PIN, LOW);
+  delay(2);
+  digitalWrite(LORA_RST_PIN, HIGH);
+  delay(10);                                         // 칩 부팅 — BUSY가 올라올 시간을 먼저 준다
+  uint32_t t0 = millis();
+  while (digitalRead(LORA_BUSY_PIN) && (uint32_t)(millis() - t0) < 100) delay(1);
+  delay(5);
+}
+
 void lora_begin() {
   SPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
 
+  radio_hw_reset();
+  radio.resetOnStartup = false;                      // 위에서 이미 했다 — RadioLib의 레이스를 피한다
   int st = radio.begin(RF_FREQ_MHZ, RF_BW_KHZ, RF_SF, RF_CR_DENOM,
                        RF_SYNC_WORD, LORA_TX_DBM, RF_PREAMBLE, LORA_TCXO_V);
   s_begin_status = st;
@@ -302,6 +322,11 @@ void lora_begin() {
   // Wio-SX1262: 안테나 스위치는 SX1262 내부 DIO2가 제어. CRC는 lora_rf.h를 따른다 —
   // explicit header가 CRC-present 비트를 싣기 때문에 노드별로 켜도 flag day가 아니다.
   radio.setDio2AsRfSwitch(true);
+#ifdef LORA_RXEN_PIN
+  // Wio-SX1262의 RF 스위치는 DIO2(TX 경로)만으로 끝나지 않는다: RX 경로 enable이 ESP32
+  // GPIO에 따로 나와 있어 수신 중엔 HIGH로 잡아줘야 한다 (Meshtastic SX126X_RXEN=38과 동일).
+  radio.setRfSwitchPins(LORA_RXEN_PIN, RADIOLIB_NC);
+#endif
   radio.setCRC(RF_CRC_ON ? 2 : 0);
 
   radio.setPacketReceivedAction(lora_on_dio1);

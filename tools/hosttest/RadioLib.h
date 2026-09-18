@@ -2,6 +2,7 @@
 #include "Arduino.h"
 #include <vector>
 #define RADIOLIB_ERR_NONE 0
+#define RADIOLIB_NC (0xFFFFFFFFu)
 #define RADIOLIB_CHANNEL_FREE (-711)
 #define RADIOLIB_LORA_DETECTED (-702)
 struct Module { Module(int, int, int, int) {} };
@@ -11,7 +12,9 @@ extern std::vector<uint8_t> g_rx_pkt;
 extern int g_cad_busy_n;      // next N scans report busy
 extern int g_rx_rssi;
 struct SX1262 {
+  bool resetOnStartup = true;
   SX1262(Module*) {}
+  void setRfSwitchPins(uint32_t, uint32_t) {}
   int begin(float, float, int, int, int, int, int, float) { return 0; }
   int setDio2AsRfSwitch(bool) { return 0; }
   int setCRC(int) { return 0; }
