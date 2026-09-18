@@ -1,0 +1,10 @@
+# Arduino IDE compiled-binary export (large; original working binary kept on disk as a fallback)
+build/
+# local tooling state
+.omc/
+.claude/
+# macOS
+.DS_Store
+
+# host-side protocol test binary
+tools/hosttest/hosttest.bin
