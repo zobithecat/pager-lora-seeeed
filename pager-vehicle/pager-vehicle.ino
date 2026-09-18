@@ -5,6 +5,7 @@
 #include "config.h"
 #include "lora.h"
 #include "bme280.h"
+#include "bmp390.h"
 #include "ble_dash.h"
 #if !ARDUINO_USB_MODE
 #include "tusb.h"             // tud_mounted / tud_suspended (USB-OTG/TinyUSB 모드)
@@ -151,14 +152,31 @@ static void power_tick(uint32_t now) {
 // ---------------------------------------------------------------------------
 // 센서 / 비콘
 // ---------------------------------------------------------------------------
+// 환경 센서: BME280/BMP280 또는 BMP390/388 중 버스에 있는 쪽. 늦게 꽂혀도 10초마다 다시 찾는다.
+static const char* g_env_name = nullptr;          // nullptr = 아직 못 찾음
+static bool        g_env_is_bmp3 = false;
+static void env_probe() {
+  Bme280Chip c = bme280_begin(BME280_ADDR);
+  if (c != Bme280Chip::None) { g_env_name = (c == Bme280Chip::BME280) ? "BME280" : "BMP280"; g_env_is_bmp3 = false; }
+  else if (const char* n = bmp390_begin())       { g_env_name = n; g_env_is_bmp3 = true; }
+  else return;
+  LOGF("[ENV] sensor: %s%s\n", g_env_name, strcmp(g_env_name, "BME280") ? " (no humidity)" : "");
+}
+static Bme280Reading env_read() {
+  if (!g_env_name) return Bme280Reading{};
+  Bme280Reading r = g_env_is_bmp3 ? bmp390_read() : bme280_read();
+  if (!r.ok) g_env_name = nullptr;                // 뽑혔거나 버스 오류 → 다음 주기에 다시 probe
+  return r;
+}
+
 static bool env_hot() { return g_env.ok && g_env.temp_c >= VEH_TEMP_WARN_C; }
 
 static void sensor_tick(uint32_t now) {
   if ((int32_t)(now - g_next_sensor_ms) < 0) return;
   g_next_sensor_ms = now + VEH_SENSOR_MS;
-  if (bme280_chip() == Bme280Chip::None) bme280_begin(BME280_ADDR);   // 늦게 꽂혀도 잡는다
+  if (!g_env_name) env_probe();
   bool was_hot = env_hot();
-  g_env = bme280_read();
+  g_env = env_read();
   read_vbat();
   if (batt_low() && !g_batt_low_sent) {
     g_batt_low_sent = true;
@@ -219,8 +237,7 @@ static void send_hello() {
 
 static void send_status() {
   LoraStats ls; lora_get_stats(&ls);
-  const char* chip = bme280_chip() == Bme280Chip::BME280 ? "BME280"
-                   : bme280_chip() == Bme280Chip::BMP280 ? "BMP280" : "none";
+  const char* chip = g_env_name ? g_env_name : "none";
   uint32_t now = millis();
   String s = "{\"t\":\"st\",\"parked\":";
   s += g_parked ? "true" : "false";
@@ -364,6 +381,43 @@ static void on_lora_conn(bool connected) {
   g_next_status_ms = 0;
 }
 
+// 진단: I2C 버스 스캔 + 흔한 센서의 ID 레지스터 덤프 (Serial 'I').
+static int i2c_read_reg(uint8_t addr, uint8_t reg) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return -1;
+  if (Wire.requestFrom((int)addr, 1) != 1) return -1;
+  return Wire.read();
+}
+// 선 하나의 전기적 상태: 내부 풀업/풀다운(~45k)을 번갈아 걸어 본다.
+//   up=1 down=1 → 외부 풀업 있음(정상)   up=1 down=0 → 떠 있음(아무것도 안 물림)
+//   up=0 down=0 → 뭔가가 Low로 강하게 잡고 있음(GND/엉뚱한 핀에 물림, 또는 모듈 전원 없음)
+static void i2c_line_state(const char* name, int pin) {
+  pinMode(pin, INPUT_PULLUP);   delay(2); int up = digitalRead(pin);
+  pinMode(pin, INPUT_PULLDOWN); delay(2); int dn = digitalRead(pin);
+  pinMode(pin, INPUT);
+  Serial.printf("  %s (GPIO%d): pullup=%d pulldown=%d → %s\n", name, pin, up, dn,
+                up && dn ? "외부 풀업 OK" : up && !dn ? "떠 있음 — 센서에 안 물렸거나 풀업 없는 모듈"
+                                          : "LOW로 잡혀 있음 — 배선 확인");
+}
+static void i2c_scan() {
+  Wire.end();
+  Serial.println("[I2C] line check");
+  i2c_line_state("SDA/D4", I2C_SDA_PIN);
+  i2c_line_state("SCL/D5", I2C_SCL_PIN);
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setTimeOut(20);
+  int found = 0;
+  for (uint8_t a = 0x08; a < 0x78; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() != 0) continue;
+    found++;
+    Serial.printf("  0x%02X  reg[0xD0]=%d reg[0x00]=%d reg[0x0F]=%d reg[0xFF]=%d\n", a,
+                  i2c_read_reg(a, 0xD0), i2c_read_reg(a, 0x00), i2c_read_reg(a, 0x0F), i2c_read_reg(a, 0xFF));
+  }
+  Serial.printf("[I2C] %d device(s)\n", found);
+}
+
 // ---------------------------------------------------------------------------
 // Setup / Loop
 // ---------------------------------------------------------------------------
@@ -375,7 +429,7 @@ void setup() {
   LOGF("\n==== pager-vehicle %s / XIAO-S3 + Wio-SX1262 / node %s ====\n", FW_VERSION, NODE_ID);
   LOGF("[BOOT] reset_reason=%d (1=POR 4=PANIC 5=INT_WDT 6=TASK_WDT 7=WDT 9=BROWNOUT 11=USB)\n",
        (int)esp_reset_reason());
-  LOGF("Serial: S=status  N=nodes  X=RF config  R=last RSSI  B=beacon now  M<text>=send chat\n");
+  LOGF("Serial: S=status  I=i2c scan  N=nodes  X=RF config  R=last RSSI  B=beacon now  M<text>=send chat\n");
 
 #if VEH_VBUS_SENSE_PIN >= 0
   pinMode(VEH_VBUS_SENSE_PIN, INPUT);
@@ -388,9 +442,9 @@ void setup() {
   LOGF("[CFG] display id = \"%s\"\n", g_display_id.c_str());
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-  Bme280Chip chip = bme280_begin(BME280_ADDR);
-  LOGF("[ENV] sensor: %s\n", chip == Bme280Chip::BME280 ? "BME280"
-                           : chip == Bme280Chip::BMP280 ? "BMP280 (no humidity!)" : "NOT FOUND");
+  Wire.setTimeOut(20);            // SCL이 잡혀 있을 때 probe가 메인 루프를 오래 막지 않게
+  env_probe();
+  if (!g_env_name) LOGF("[ENV] sensor: NOT FOUND (Serial 'I' = I2C 진단)\n");
 
   lora_begin();
   lora_set_callbacks(on_lora_msg, on_lora_conn);
@@ -454,6 +508,7 @@ void loop() {
     }
     switch (c) {
       case 'M': g_serial_msg_mode = true; g_serial_line = ""; break;
+      case 'I': i2c_scan(); break;
       case 'N': lora_dump_neighbors(); break;
       case 'X': lora_probe_at(); break;
       case 'R': lora_query_rssi(); break;

@@ -4,7 +4,7 @@
 
 | 기능 | 내용 |
 |------|------|
-| 온습도 센싱 | BME280 (I2C) 10초 주기 forced 측정. BMP280이 꽂혀 있으면 습도 없이 동작 |
+| 온습도 센싱 | I2C 환경 센서 자동 인식, 10초 주기 forced 측정. **BME280**(온도·습도·기압) / BMP280 / **BMP390·BMP388**(CJMCU-390, 온도·기압만 — 습도 없음) |
 | LoRa discovery | 유효한 봉투를 하나라도 들은 노드 전부 — id / 이름(HB) / RSSI·SNR(직접 수신분만) / 홉 / 마지막 상태 프레임 |
 | 주차 비콘 | 주차 중(= LiPo 구동) 5분마다 `!CAR` 상태 비콘. 포맷은 [PROTOCOL_CAR.md](PROTOCOL_CAR.md) |
 | BLE 대시보드 | 폰이 Central. 상태 · 주변 노드 · 비콘 · 채팅(L2 송수신) · 재난경보(`!AL`) 표시 |
@@ -13,7 +13,9 @@
 ## 하드웨어
 
 - Seeed **XIAO ESP32S3 + Wio-SX1262** 키트 (B2B 커넥터, 납땜 불필요)
-- **BME280** I2C 모듈 → `3V3` / `GND` / `SDA=D4(GPIO5)` / `SCL=D5(GPIO6)`. 주소 0x76/0x77 자동 탐색
+- 환경 센서 I2C 모듈 → `3V3` / `GND` / `SDA=D4(GPIO5)` / `SCL=D5(GPIO6)`. 주소 0x76/0x77 자동 탐색
+  - BMP390(CJMCU-390)은 `CSB`를 **3V3에**(I2C 모드 고정), `SDO`를 GND(0x76) 또는 3V3(0x77)에 묶는다. `INT`는 비워둔다
+  - 안 잡히면 Serial `I` — 버스 스캔 + SDA/SCL 선이 떠 있는지/Low로 잡혔는지 알려준다
 - **LiPo** 1셀 → XIAO 뒷면 `BAT+`/`BAT-` 패드. USB가 꽂혀 있는 동안 XIAO가 충전한다
 - 전원: 차량 USB 포트
 
@@ -61,7 +63,7 @@ USB CDC On Boot `Enabled`. USB Mode는 둘 다 지원한다(기본 USB-OTG/TinyU
 arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi pager-vehicle
 ```
 
-Serial(115200): `S` 상태 · `N` 노드 테이블+dedup 통계 · `X` RF 설정 · `R` 마지막 RSSI · `B` 비콘 즉시 · `M<text>⏎` 채팅 송신
+Serial(115200): `S` 상태 · `I` I2C 진단 · `N` 노드 테이블+dedup 통계 · `X` RF 설정 · `R` 마지막 RSSI · `B` 비콘 즉시 · `M<text>⏎` 채팅 송신
 
 ## 대시보드 (Bluefy)
 
