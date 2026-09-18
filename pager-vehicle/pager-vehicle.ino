@@ -29,7 +29,9 @@ static uint32_t g_power_raw_ms  = 0;
 // 센서
 static Bme280Reading g_env = {};
 static uint32_t g_next_sensor_ms = 0;
-static int      g_vbat_mv = -1;
+static int      g_vbat_mv = -1;           // -1 = 측정 불가 (분압 배선 없음)
+static float    g_vbat_filt = 0;
+static bool     g_batt_low_sent = false;
 
 // 비콘
 static uint32_t g_next_beacon_ms = 0;        // 0 = 예약 없음
@@ -95,10 +97,35 @@ static bool vehicle_power_present() {
 static void read_vbat() {
 #if VEH_VBAT_ADC_PIN >= 0
   uint32_t acc = 0;
-  for (int i = 0; i < 8; i++) acc += analogReadMilliVolts(VEH_VBAT_ADC_PIN);
-  g_vbat_mv = (int)((float)acc / 8.0f * VEH_VBAT_DIVIDER);
+  for (int i = 0; i < 16; i++) acc += analogReadMilliVolts(VEH_VBAT_ADC_PIN);
+  float mv = (float)acc / 16.0f * VEH_VBAT_DIVIDER * VEH_VBAT_CAL;
+  if (mv < 2500.0f || mv > 4500.0f) {            // 1셀 LiPo일 수 없는 값 = 핀이 떠 있다
+    g_vbat_mv = -1;
+    g_vbat_filt = 0;
+    return;
+  }
+  // LoRa 송신 순간의 전압 강하로 %가 출렁이지 않게 완만히 따라간다 (10 s 주기 × 0.25).
+  g_vbat_filt = (g_vbat_filt > 0) ? g_vbat_filt * 0.75f + mv * 0.25f : mv;
+  g_vbat_mv = (int)lroundf(g_vbat_filt);
 #endif
 }
+
+// 1셀 LiPo 개방전압 → 잔량 %. 부하가 가벼워서(수십 mA) OCV 곡선을 그대로 쓴다.
+// USB로 충전 중일 땐 충전 전압이 읽혀 실제보다 높게 나온다 — 대시보드가 "충전 중"으로 구분.
+static int battery_pct(int mv) {
+  static const struct { int mv, pct; } k[] = {
+    {4200, 100}, {4150, 95}, {4110, 90}, {4080, 85}, {4020, 80}, {3980, 75}, {3950, 70},
+    {3910, 65},  {3870, 60}, {3850, 55}, {3840, 50}, {3820, 45}, {3800, 40}, {3790, 35},
+    {3770, 30},  {3750, 25}, {3730, 20}, {3710, 15}, {3690, 10}, {3610, 5},  {3270, 0}};
+  if (mv < 0) return -1;
+  if (mv >= k[0].mv) return 100;
+  for (size_t i = 1; i < sizeof(k) / sizeof(k[0]); i++) {
+    if (mv >= k[i].mv)
+      return k[i].pct + (int)lroundf((float)(mv - k[i].mv) * (k[i - 1].pct - k[i].pct) / (k[i - 1].mv - k[i].mv));
+  }
+  return 0;
+}
+static bool batt_low() { int p = battery_pct(g_vbat_mv); return g_parked && p >= 0 && p <= VEH_BATT_LOW_PCT; }
 
 static void schedule_beacon(uint32_t in_ms) { g_next_beacon_ms = millis() + in_ms; if (!g_next_beacon_ms) g_next_beacon_ms = 1; }
 
@@ -133,6 +160,13 @@ static void sensor_tick(uint32_t now) {
   bool was_hot = env_hot();
   g_env = bme280_read();
   read_vbat();
+  if (batt_low() && !g_batt_low_sent) {
+    g_batt_low_sent = true;
+    LOGF("[BATT] low: %d mV (%d%%)\n", g_vbat_mv, battery_pct(g_vbat_mv));
+    schedule_beacon(1000);               // 꺼지기 전에 한 번은 알린다
+  } else if (!g_parked) {
+    g_batt_low_sent = false;             // 다시 충전되면 다음 주차 때 또 알릴 수 있게
+  }
   if (env_hot() && !was_hot) {
     LOGF("[ENV] !!! %.1f°C ≥ %.0f°C — LiPo overheat risk\n", (double)g_env.temp_c, (double)VEH_TEMP_WARN_C);
     schedule_beacon(1000);               // 과열 진입은 주기를 기다리지 않고 알린다
@@ -143,6 +177,7 @@ static void sensor_tick(uint32_t now) {
 static String build_beacon() {
   String st = g_parked ? "P" : "D";
   if (env_hot()) st += 'H';
+  if (batt_low()) st += 'L';
   String s = "!CAR\t" NODE_ID "\t" + st + "\t";
   s += g_env.ok ? String(g_env.temp_c, 1) : String("-");                          s += '\t';
   s += (g_env.ok && g_env.has_humidity) ? String(g_env.hum_pct, 1) : String("-"); s += '\t';
@@ -195,6 +230,8 @@ static void send_status() {
   s += ",\"hpa\":"  + num_or_null(g_env.ok, g_env.press_hpa, 1);
   s += ",\"hot\":"; s += env_hot() ? "true" : "false";
   s += ",\"vbat\":" + (g_vbat_mv >= 0 ? String(g_vbat_mv) : String("null"));
+  s += ",\"bpct\":" + (g_vbat_mv >= 0 ? String(battery_pct(g_vbat_mv)) : String("null"));
+  s += ",\"blow\":"; s += batt_low() ? "true" : "false";
   s += ",\"up\":" + String((unsigned long)(now / 1000));
   s += ",\"nodes\":" + String(lora_nodes_count());
   s += ",\"link\":"; s += lora_connected() ? "true" : "false";
@@ -422,9 +459,9 @@ void loop() {
       case 'R': lora_query_rssi(); break;
       case 'B': schedule_beacon(0); Serial.println("[CMD] beacon now"); break;
       case 'S':
-        Serial.printf("[STAT] %s  power_raw=%d  T=%.1fC RH=%.1f%% P=%.1fhPa ok=%d  vbat=%dmV  nodes=%d  ble=%d  cpu=%luMHz\n",
+        Serial.printf("[STAT] %s  power_raw=%d  T=%.1fC RH=%.1f%% P=%.1fhPa ok=%d  vbat=%dmV(%d%%)  nodes=%d  ble=%d  cpu=%luMHz\n",
                       g_parked ? "PARKED" : "DRIVING", (int)g_power_raw, (double)g_env.temp_c,
-                      (double)g_env.hum_pct, (double)g_env.press_hpa, (int)g_env.ok, g_vbat_mv,
+                      (double)g_env.hum_pct, (double)g_env.press_hpa, (int)g_env.ok, g_vbat_mv, battery_pct(g_vbat_mv),
                       lora_nodes_count(), (int)ble_dash_ready(), (unsigned long)getCpuFrequencyMhz());
         Serial.printf("[STAT] next beacon: %s\n", build_beacon().c_str());
         break;

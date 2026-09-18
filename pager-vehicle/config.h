@@ -35,10 +35,16 @@
 //   100k/100k로 분압해 GPIO에 넣고 VEH_VBUS_SENSE_PIN에 그 핀 번호를 주면 된다.
 #define VEH_VBUS_SENSE_PIN  (-1)     // -1 = 미사용 (USB 호스트 감지만)
 #define VEH_POWER_DEBOUNCE_MS 10000UL // 시동 크랭킹 중 순간 끊김에 흔들리지 않게
-// 배터리 전압: XIAO ESP32S3는 BAT가 ADC에 안 물려 있다. BAT+를 분압(예: 100k/100k)해
-// ADC 핀에 넣었을 때만 핀 번호를 준다. -1이면 비콘의 vbat 필드는 "-".
-#define VEH_VBAT_ADC_PIN    (-1)
+// 배터리 전압: XIAO ESP32S3는 BAT가 ADC에 안 물려 있어서 분압 배선이 있어야 읽힌다.
+//     BAT+ ──[R1 200k]──┬──[R2 200k]── GND
+//                       └── D0 / A0 (GPIO1)          (Seeed 위키 권장 회로. 상시 소모 ~10 µA)
+//   R1 = R2면 DIVIDER 2.0. 다른 값을 쓰면 (R1+R2)/R2. 잡음이 크면 A0–GND에 100 nF.
+// 배선이 없으면 핀이 떠서 엉뚱한 값이 읽히므로, 2.5–4.5 V를 벗어난 값은 "측정 불가"로 버린다
+// → 저항을 달기 전에도 이 설정 그대로 둬도 된다. 기능을 아예 끄려면 -1.
+#define VEH_VBAT_ADC_PIN    1
 #define VEH_VBAT_DIVIDER    2.0f
+#define VEH_VBAT_CAL        1.000f   // 멀티미터 실측 / 표시값. 저항 오차(±1–5 %) 보정용
+#define VEH_BATT_LOW_PCT    15       // 주차 중 이 이하로 떨어지면 비콘에 'L' 플래그 + 즉시 1발
 
 // ----- 상태 비콘 (!CAR, PROTOCOL_CAR.md) -----
 #define VEH_BEACON_PARKED_MS   300000UL  // 주차 중 5분마다. §8a beacon-class → 스트림에 양보

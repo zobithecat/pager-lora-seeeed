@@ -57,6 +57,14 @@
   .metric b { display: block; font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
   .metric span { font-size: 11px; color: var(--sub); }
   .metric.hot b { color: var(--bad); }
+  .batt { display: flex; align-items: center; gap: 14px; }
+  .batt .pct { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; min-width: 84px; }
+  .batt .pct small { font-size: 15px; font-weight: 600; color: var(--sub); }
+  .batt .right { flex: 1; }
+  .batt .volt { font-size: 13px; color: var(--sub); font-variant-numeric: tabular-nums; }
+  .cell { height: 12px; border-radius: 6px; background: var(--line); overflow: hidden; margin-bottom: 5px; }
+  .cell i { display: block; height: 100%; width: 0; background: var(--good); transition: width .4s; }
+  .cell.mid i { background: var(--warn); } .cell.low i { background: var(--bad); }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; }
   .kv dt { color: var(--sub); } .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
   code, .mono { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -133,6 +141,16 @@
       </div>
     </div>
     <div class="card">
+      <h2>배터리 (LiPo)</h2>
+      <div class="batt">
+        <div class="pct" id="vBpct">—</div>
+        <div class="right">
+          <div class="cell" id="battCell"><i id="battFill"></i></div>
+          <div class="volt" id="vBat">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
       <h2>상태 비콘 (!CAR)</h2>
       <dl class="kv">
         <dt>송신 횟수</dt><dd id="vBcnN">—</dd>
@@ -149,7 +167,6 @@
         <dt>마지막 수신 RSSI</dt><dd id="vRssi">—</dd>
         <dt>수신 / 중복 / 손상</dt><dd id="vRx">—</dd>
         <dt>송신 / LBT 양보</dt><dd id="vTx">—</dd>
-        <dt>배터리</dt><dd id="vBat">—</dd>
         <dt>가동 시간</dt><dd id="vUp">—</dd>
         <dt>무선 설정</dt><dd id="vRf">—</dd>
       </dl>
@@ -330,10 +347,30 @@ function renderStatus() {
   $("vRssi").textContent = s.rssi === null ? "—" : s.rssi + " dBm";
   $("vRx").textContent = `${s.rx} / ${s.dup} / ${s.bad}`;
   $("vTx").textContent = `${s.tx} / ${s.lbt}`;
-  $("vBat").textContent = s.vbat === null ? "측정 배선 없음" : (s.vbat / 1000).toFixed(2) + " V";
+  if (s.vbat === null || s.vbat === undefined) {
+    $("vBpct").textContent = "—"; $("battFill").style.width = "0";
+    $("vBat").textContent = "측정 불가 — BAT+ 분압 배선(200k/200k → D0) 필요";
+  } else {
+    const pct = s.bpct ?? battPct(s.vbat);
+    $("vBpct").innerHTML = pct + "<small>%</small>";
+    $("battFill").style.width = pct + "%";
+    $("battCell").className = "cell" + (pct <= 15 ? " low" : pct <= 35 ? " mid" : "");
+    // USB가 꽂혀 있으면 읽히는 건 충전 전압이라 %가 실제보다 높게 나온다
+    $("vBat").textContent = (s.vbat / 1000).toFixed(2) + " V · " + (s.parked ? (s.blow ? "배터리 부족" : "방전 중") : "USB 전원 · 충전 중 (표시값은 실제보다 높음)");
+  }
   $("vUp").textContent = dur(s.up + drift);
 }
 
+// 펌웨어 battery_pct()와 같은 1셀 LiPo OCV 곡선 — 다른 차의 !CAR(mV만 실려 옴)에도 쓴다
+const BATT = [[4200,100],[4150,95],[4110,90],[4080,85],[4020,80],[3980,75],[3950,70],[3910,65],[3870,60],[3850,55],[3840,50],[3820,45],[3800,40],[3790,35],[3770,30],[3750,25],[3730,20],[3710,15],[3690,10],[3610,5],[3270,0]];
+function battPct(mv) {
+  if (mv >= BATT[0][0]) return 100;
+  for (let i = 1; i < BATT.length; i++) if (mv >= BATT[i][0]) {
+    const [m1, p1] = BATT[i], [m0, p0] = BATT[i - 1];
+    return Math.round(p1 + (mv - m1) * (p0 - p1) / (m0 - m1));
+  }
+  return 0;
+}
 const ROLE = { T: "T-Deck", P: "페이저", R: "relay", F: "팬", E: "엣지" };
 function describe(n) {
   const f = (n.info || "").split("\t");
@@ -343,10 +380,11 @@ function describe(n) {
     const st = f[1] || "";
     tags.push(`<span class="tag car">차량 ${st[0] === "P" ? "주차" : "주행"}</span>`);
     if (st.includes("H")) tags.push(`<span class="tag hot">과열</span>`);
+    if (st.includes("L")) tags.push(`<span class="tag hot">배터리 부족</span>`);
     const bits = [];
     if (f[2] && f[2] !== "-") bits.push(f[2] + "°C");
     if (f[3] && f[3] !== "-") bits.push(f[3] + "%");
-    if (f[5] && f[5] !== "-") bits.push((f[5] / 1000).toFixed(2) + "V");
+    if (f[5] && f[5] !== "-") bits.push(`${battPct(+f[5])}% (${(f[5] / 1000).toFixed(2)}V)`);
     if (f[7]) bits.push("이웃 " + f[7]);
     text = bits.join(" · ");
   } else if (n.it === "RB") {
