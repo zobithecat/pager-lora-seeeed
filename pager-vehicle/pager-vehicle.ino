@@ -424,17 +424,33 @@ static void i2c_scan() {
   i2c_line_state("SDA/D4", I2C_SDA_PIN);
   i2c_line_state("SCL/D5", I2C_SCL_PIN);
   env_pins_init();
+  // 정상 배선 → SDA/SCL 바꿔서 → 둘 다 50 kHz로. 어디서든 잡히면 원인이 바로 드러난다.
+  struct { int sda, scl; uint32_t hz; const char* why; } tries[] = {
+    {I2C_SDA_PIN, I2C_SCL_PIN, 100000, "normal"},
+    {I2C_SCL_PIN, I2C_SDA_PIN, 100000, "SDA/SCL SWAPPED"},
+    {I2C_SDA_PIN, I2C_SCL_PIN,  50000, "normal 50kHz"},
+    {I2C_SCL_PIN, I2C_SDA_PIN,  50000, "swapped 50kHz"},
+  };
+  int total = 0;
+  for (auto& t : tries) {
+    Wire.end();
+    Wire.begin(t.sda, t.scl, t.hz);
+    Wire.setTimeOut(20);
+    int found = 0;
+    for (uint8_t a = 0x08; a < 0x78; a++) {
+      Wire.beginTransmission(a);
+      if (Wire.endTransmission() != 0) continue;
+      found++; total++;
+      Serial.printf("  [%s] 0x%02X  reg[0x00]=%d reg[0xD0]=%d   (BMP390: reg0=0x60=96 / BME280: regD0=0x60=96)\n",
+                    t.why, a, i2c_read_reg(a, 0x00), i2c_read_reg(a, 0xD0));
+    }
+    if (found) break;                         // 찾았으면 그 배선 설정을 남겨둔다
+    Serial.printf("  [%s] nothing\n", t.why);
+  }
+  Wire.end();
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setTimeOut(20);
-  int found = 0;
-  for (uint8_t a = 0x08; a < 0x78; a++) {
-    Wire.beginTransmission(a);
-    if (Wire.endTransmission() != 0) continue;
-    found++;
-    Serial.printf("  0x%02X  reg[0xD0]=%d reg[0x00]=%d reg[0x0F]=%d reg[0xFF]=%d\n", a,
-                  i2c_read_reg(a, 0xD0), i2c_read_reg(a, 0x00), i2c_read_reg(a, 0x0F), i2c_read_reg(a, 0xFF));
-  }
-  Serial.printf("[I2C] %d device(s)\n", found);
+  Serial.printf("[I2C] %d device(s)\n", total);
 }
 
 // ---------------------------------------------------------------------------
