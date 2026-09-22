@@ -453,6 +453,46 @@ static void i2c_scan() {
   Serial.printf("[I2C] %d device(s)\n", total);
 }
 
+// 진단 'J': 센서에 SPI(비트뱅, mode 0)로 말을 건다. I2C에 침묵하는 BMP390이 여기 답하면
+// 칩은 살아 있고 SPI 모드로 잠긴 것(= 전원 인가 순간 CSB가 Low였다는 뜻).
+//   CS=CSB(GPIO2)  SCK=SCL선(I2C_SCL_PIN)  MOSI=SDA선(I2C_SDA_PIN)  MISO=SDO(GPIO4)
+static void spi_probe() {
+#if VEH_ENV_CSB_PIN >= 0 && VEH_ENV_SDO_PIN >= 0
+  Wire.end();
+  const int cs = VEH_ENV_CSB_PIN, sck = I2C_SCL_PIN, mosi = I2C_SDA_PIN, miso = VEH_ENV_SDO_PIN;
+  gpio_reset_pin((gpio_num_t)sck); gpio_reset_pin((gpio_num_t)mosi); gpio_reset_pin((gpio_num_t)miso);
+  pinMode(cs, OUTPUT); digitalWrite(cs, HIGH);
+  pinMode(sck, OUTPUT); digitalWrite(sck, LOW);
+  pinMode(mosi, OUTPUT); digitalWrite(mosi, LOW);
+  pinMode(miso, INPUT);
+  auto xfer = [&](uint8_t out) {
+    uint8_t in = 0;
+    for (int b = 7; b >= 0; b--) {
+      digitalWrite(mosi, (out >> b) & 1); delayMicroseconds(5);
+      digitalWrite(sck, HIGH); delayMicroseconds(5);
+      in = (in << 1) | digitalRead(miso);
+      digitalWrite(sck, LOW); delayMicroseconds(5);
+    }
+    return in;
+  };
+  // BMP3xx SPI read: [addr|0x80] [dummy] [data...]. reg 0x00 = chip id (0x60 BMP390 / 0x50 BMP388)
+  digitalWrite(cs, LOW); delayMicroseconds(10);
+  xfer(0x80); xfer(0x00);
+  uint8_t id = xfer(0x00), rev = xfer(0x00);
+  digitalWrite(cs, HIGH); delayMicroseconds(10);
+  // BME280 SPI read: [addr&0x7F] [data]. reg 0xD0 = chip id (0x60)
+  digitalWrite(cs, LOW); delayMicroseconds(10);
+  xfer(0xD0); uint8_t id2 = xfer(0x00);
+  digitalWrite(cs, HIGH);
+  Serial.printf("[SPI] bmp3 reg0=0x%02X rev=0x%02X | bme280 regD0=0x%02X   (0x60/0x50 = 칩이 SPI로 응답, 0x00/0xFF = 무응답)\n", id, rev, id2);
+  env_pins_init();
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  Wire.setTimeOut(20);
+#else
+  Serial.println("[SPI] CSB/SDO GPIO 미설정");
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Setup / Loop
 // ---------------------------------------------------------------------------
@@ -465,7 +505,7 @@ void setup() {
   LOGF("\n==== pager-vehicle %s / XIAO-S3 + Wio-SX1262 / node %s ====\n", FW_VERSION, NODE_ID);
   LOGF("[BOOT] reset_reason=%d (1=POR 4=PANIC 5=INT_WDT 6=TASK_WDT 7=WDT 9=BROWNOUT 11=USB)\n",
        (int)esp_reset_reason());
-  LOGF("Serial: S=status  I=i2c scan  N=nodes  X=RF config  R=last RSSI  B=beacon now  M<text>=send chat\n");
+  LOGF("Serial: S=status  I=i2c scan  J=sensor spi probe  N=nodes  X=RF config  R=last RSSI  B=beacon now  M<text>=send chat\n");
 
 #if VEH_VBUS_SENSE_PIN >= 0
   pinMode(VEH_VBUS_SENSE_PIN, INPUT);
@@ -545,6 +585,7 @@ void loop() {
     switch (c) {
       case 'M': g_serial_msg_mode = true; g_serial_line = ""; break;
       case 'I': i2c_scan(); break;
+      case 'J': spi_probe(); break;
       case 'N': lora_dump_neighbors(); break;
       case 'X': lora_probe_at(); break;
       case 'R': lora_query_rssi(); break;
