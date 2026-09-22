@@ -6,7 +6,7 @@
 // Hardware: Seeed XIAO ESP32S3 + Wio-SX1262 kit (B2B) + BME280 (I2C) + LiPo (XIAO BAT 패드)
 //   LoRa SX1262: SPI(SCK=7 MISO=8 MOSI=9) + NSS=41 DIO1=39 BUSY=40 RST=42
 //                RF switch = SX1262 DIO2 (internal), TCXO = DIO3 @ 1.8V
-//   I2C(센서):   SDA=GPIO5 (D4), SCL=GPIO43 (D6)  ← D5는 이 보드에서 불량
+//   I2C(센서):   SDA=GPIO5 (D4), SCL=GPIO44 (D7)  ← D5/D6는 이 보드에서 불량
 //   전원: 주행 중 = USB 5V, 주차 중 = LiPo. XIAO가 USB 있을 때 LiPo를 충전한다.
 //   OLED/키보드 없음 — UI는 폰의 Bluefy 웹 대시보드(BLE) 하나뿐.
 
@@ -21,9 +21,9 @@
 
 // ----- I2C / BME280 -----
 #define I2C_SDA_PIN        5         // D4
-// SCL은 XIAO 기본 D5(GPIO6)가 아니라 D6(GPIO43)다. 이 개체의 D5 핀이 선을 다 뽑아도 Low로
-// 잡혀 있어(2026-09-22 실측, 납땜 브리지 또는 핀 손상) 옮겼다. D5는 이제 아무것도 안 쓴다.
-#define I2C_SCL_PIN        43        // D6
+// SCL은 XIAO 기본 D5(GPIO6)가 아니라 D7(GPIO44)다. 이 개체는 D5(GPIO6)와 D6(GPIO43)이 아무
+// 배선 없이도 Low로 잡혀 있었다(2026-09-22 핀 프로브 실측 — 브리지 또는 핀 손상). D5/D6는 안 쓴다.
+#define I2C_SCL_PIN        44        // D7
 #define BME280_ADDR        0x76      // 못 찾으면 0x77도 자동 시도
 // BMP390(CJMCU-390)의 모드/주소 핀을 GPIO로 직접 잡는다 — 점퍼 없이 확실하게.
 //   CSB: HIGH = I2C 모드. 부팅 직후 가장 먼저 HIGH로 잡아 SPI 모드로 잠기는 걸 막는다.
