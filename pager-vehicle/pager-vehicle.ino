@@ -155,7 +155,19 @@ static void power_tick(uint32_t now) {
 // 환경 센서: BME280/BMP280 또는 BMP390/388 중 버스에 있는 쪽. 늦게 꽂혀도 10초마다 다시 찾는다.
 static const char* g_env_name = nullptr;          // nullptr = 아직 못 찾음
 static bool        g_env_is_bmp3 = false;
+// 센서 제어 핀을 먼저 잡는다. setup() 맨 앞과, 매 probe 전에도 다시 확인(값이 흔들릴 일은
+// 없지만 비용이 0이고, 나중에 핀을 잘못 건드리는 코드가 들어와도 안전).
+static void env_pins_init() {
+#if VEH_ENV_CSB_PIN >= 0
+  pinMode(VEH_ENV_CSB_PIN, OUTPUT); digitalWrite(VEH_ENV_CSB_PIN, HIGH);
+#endif
+#if VEH_ENV_SDO_PIN >= 0
+  pinMode(VEH_ENV_SDO_PIN, OUTPUT); digitalWrite(VEH_ENV_SDO_PIN, VEH_ENV_SDO_LEVEL);
+#endif
+}
 static void env_probe() {
+  env_pins_init();
+  delay(2);
   Bme280Chip c = bme280_begin(BME280_ADDR);
   if (c != Bme280Chip::None) { g_env_name = (c == Bme280Chip::BME280) ? "BME280" : "BMP280"; g_env_is_bmp3 = false; }
   else if (const char* n = bmp390_begin())       { g_env_name = n; g_env_is_bmp3 = true; }
@@ -403,8 +415,13 @@ static void i2c_line_state(const char* name, int pin) {
 static void i2c_scan() {
   Wire.end();
   Serial.println("[I2C] line check");
+#if VEH_ENV_CSB_PIN >= 0
+  Serial.printf("  CSB (GPIO%d) driven HIGH = I2C mode  |  SDO (GPIO%d) driven %s = addr 0x%02X\n",
+                VEH_ENV_CSB_PIN, VEH_ENV_SDO_PIN, VEH_ENV_SDO_LEVEL ? "HIGH" : "LOW", VEH_ENV_SDO_LEVEL ? 0x77 : 0x76);
+#endif
   i2c_line_state("SDA/D4", I2C_SDA_PIN);
   i2c_line_state("SCL/D5", I2C_SCL_PIN);
+  env_pins_init();
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setTimeOut(20);
   int found = 0;
@@ -422,6 +439,7 @@ static void i2c_scan() {
 // Setup / Loop
 // ---------------------------------------------------------------------------
 void setup() {
+  env_pins_init();                // 센서가 CSB Low를 보기 전에 — 무엇보다 먼저
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);      // 주차 중엔 USB 호스트가 없다 — 로그가 루프를 막으면 안 된다
   delay(300);
