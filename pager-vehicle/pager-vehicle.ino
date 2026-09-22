@@ -7,6 +7,7 @@
 #include "bme280.h"
 #include "bmp390.h"
 #include "ble_dash.h"
+#include "driver/gpio.h"   // gpio_reset_pin (I2C 진단)
 #if !ARDUINO_USB_MODE
 #include "tusb.h"             // tud_mounted / tud_suspended (USB-OTG/TinyUSB 모드)
 #endif
@@ -405,6 +406,7 @@ static int i2c_read_reg(uint8_t addr, uint8_t reg) {
 //   up=1 down=1 → 외부 풀업 있음(정상)   up=1 down=0 → 떠 있음(아무것도 안 물림)
 //   up=0 down=0 → 뭔가가 Low로 강하게 잡고 있음(GND/엉뚱한 핀에 물림, 또는 모듈 전원 없음)
 static void i2c_line_state(const char* name, int pin) {
+  gpio_reset_pin((gpio_num_t)pin);   // I2C 드라이버가 남긴 내부 풀업/매트릭스 배선을 완전히 지운다
   pinMode(pin, INPUT_PULLUP);   delay(2); int up = digitalRead(pin);
   pinMode(pin, INPUT_PULLDOWN); delay(2); int dn = digitalRead(pin);
   pinMode(pin, INPUT);
