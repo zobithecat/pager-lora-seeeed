@@ -25,11 +25,10 @@
 // 배선 없이도 Low로 잡혀 있었다(2026-09-22 핀 프로브 실측 — 브리지 또는 핀 손상). D5/D6는 안 쓴다.
 #define I2C_SCL_PIN        44        // D7
 #define BME280_ADDR        0x76      // 못 찾으면 0x77도 자동 시도
-// BMP390(CJMCU-390)의 모드/주소 핀을 GPIO로 직접 잡는다 — 점퍼 없이 확실하게.
-//   CSB: HIGH = I2C 모드. 부팅 직후 가장 먼저 HIGH로 잡아 SPI 모드로 잠기는 걸 막는다.
-//        (한 번 SPI로 잠기면 센서 전원을 껐다 켜야 풀린다 — 센서 VCC는 3V3 직결이므로
-//         그때는 USB+LiPo를 모두 뽑았다 꽂을 것)
-//   SDO: LOW = 주소 0x76, HIGH = 0x77.
+// BMP390/388(CJMCU-390)의 CSB/SDO도 GPIO에 있다 → 센서를 SPI(비트뱅)로 읽는다:
+//   CS=CSB(GPIO2)  SCK=I2C_SCL_PIN  MOSI=I2C_SDA_PIN  MISO=SDO(GPIO4).
+// I2C로는 이 보드가 끝내 응답하지 않았고 SPI로는 바로 잡혔다(2026-09-22). BME280은 여전히
+// 같은 SDA/SCL에서 I2C로 먼저 탐색한다. 아래 두 핀이 -1이면 BMP3도 I2C(0x76/0x77)로 시도.
 // GPIO3(D2)은 ESP32-S3 스트래핑 핀이라 피했다. -1이면 그 핀은 안 건드린다(외부 점퍼로 처리).
 #define VEH_ENV_CSB_PIN    2         // D1
 #define VEH_ENV_SDO_PIN    4         // D3

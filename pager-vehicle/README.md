@@ -15,8 +15,9 @@
 - Seeed **XIAO ESP32S3 + Wio-SX1262** 키트 (B2B 커넥터, 납땜 불필요)
 - 환경 센서 I2C 모듈 → `3V3` / `GND` / `SDA=D4(GPIO5)` / **`SCL=D7(GPIO44)`**. 주소 0x76/0x77 자동 탐색
   - SCL이 XIAO 기본(D5)이 아닌 이유: 이 보드는 D5(GPIO6)·D6(GPIO43)이 무배선 상태에서도 Low로 잡혀 있었다(브리지/손상). 정상 보드면 `config.h`에서 6으로 되돌려도 된다
-  - BMP390(CJMCU-390): `CSB` → **D1(GPIO2)**, `SDO` → **D3(GPIO4)**. 펌웨어가 부팅 즉시 CSB=HIGH(I2C 모드), SDO=LOW(주소 0x76)로 잡는다. `INT`는 비워둔다
-  - 이미 SPI 모드로 잠긴 센서는 GPIO를 잡아도 안 돌아온다 → 센서 전원(=USB와 LiPo 둘 다)을 뽑았다 꽂을 것
+  - **CJMCU-390(실제 칩 BMP388, id 0x50)은 SPI로 읽는다** — 4선이 전부 GPIO라 I2C 모드 잠김 문제가 없다:
+    `CSB`→**D1(GPIO2)**=CS, `SCL`→**D7(GPIO44)**=SCK, `SDA`→**D4(GPIO5)**=MOSI(SDI), `SDO`→**D3(GPIO4)**=MISO. `INT` 비움
+  - 같은 선에 BME280을 I2C로 꽂아도 된다(probe가 I2C BME280 → SPI BMP3 순으로 시도)
   - 안 잡히면 Serial `I` — 버스 스캔 + SDA/SCL 선이 떠 있는지/Low로 잡혔는지 알려준다
 - **LiPo** 1셀 → XIAO 뒷면 `BAT+`/`BAT-` 패드. USB가 꽂혀 있는 동안 XIAO가 충전한다
 - 전원: 차량 USB 포트

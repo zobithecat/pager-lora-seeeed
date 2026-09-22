@@ -2,6 +2,7 @@
 #include <Wire.h>
 
 // Register map / compensation: Bosch BMP390 datasheet rev 1.7, §4.3 + §8.4–8.6 (float 버전).
+// BMP388도 같은 맵/보정식 (chip id만 0x50).
 #define REG_CHIP_ID   0x00   // 0x60 = BMP390, 0x50 = BMP388
 #define REG_STATUS    0x03   // bit6 drdy_temp, bit5 drdy_press, bit4 cmd_rdy
 #define REG_DATA      0x04   // press xlsb/lsb/msb, temp xlsb/lsb/msb
@@ -11,11 +12,33 @@
 #define REG_CALIB     0x31   // 21 bytes
 #define REG_CMD       0x7E   // 0xB6 = soft reset
 
-static uint8_t     s_addr = 0;
+// 전송 계층: SPI 비트뱅(mode 0)이 기본. CSB/SDO가 GPIO에 있으면 I2C 모드 잠김 문제가 없는
+// SPI가 훨씬 확실하다 (2026-09-22: I2C로는 끝내 침묵하던 CJMCU-390(BMP388)이 SPI엔 바로 응답).
+// 4선이 없으면 I2C(0x76/0x77)로 폴백.
+static bool    s_spi = false;
+static int     s_cs = -1, s_sck = -1, s_mosi = -1, s_miso = -1;
+static uint8_t s_addr = 0;
 static const char* s_name = nullptr;
 static double t1, t2, t3, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11;
 
+static uint8_t spi_xfer(uint8_t out) {
+  uint8_t in = 0;
+  for (int b = 7; b >= 0; b--) {
+    digitalWrite(s_mosi, (out >> b) & 1); delayMicroseconds(2);
+    digitalWrite(s_sck, HIGH); delayMicroseconds(2);
+    in = (in << 1) | digitalRead(s_miso);
+    digitalWrite(s_sck, LOW); delayMicroseconds(2);
+  }
+  return in;
+}
 static bool rd(uint8_t reg, uint8_t* buf, size_t n) {
+  if (s_spi) {
+    digitalWrite(s_cs, LOW); delayMicroseconds(5);
+    spi_xfer(reg | 0x80); spi_xfer(0x00);            // BMP3 SPI read: addr|0x80, dummy, data…
+    for (size_t i = 0; i < n; i++) buf[i] = spi_xfer(0x00);
+    digitalWrite(s_cs, HIGH); delayMicroseconds(5);
+    return true;
+  }
   Wire.beginTransmission(s_addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;
@@ -24,6 +47,12 @@ static bool rd(uint8_t reg, uint8_t* buf, size_t n) {
   return true;
 }
 static bool wr(uint8_t reg, uint8_t val) {
+  if (s_spi) {
+    digitalWrite(s_cs, LOW); delayMicroseconds(5);
+    spi_xfer(reg & 0x7F); spi_xfer(val);
+    digitalWrite(s_cs, HIGH); delayMicroseconds(5);
+    return true;
+  }
   Wire.beginTransmission(s_addr);
   Wire.write(reg);
   Wire.write(val);
@@ -33,6 +62,8 @@ static bool wr(uint8_t reg, uint8_t val) {
 static const char* probe(uint8_t addr) {
   s_addr = addr;
   uint8_t id = 0;
+  if (s_spi) { rd(REG_CHIP_ID, &id, 1); if (id != 0x60 && id != 0x50) { delay(2); rd(REG_CHIP_ID, &id, 1); } }
+  else
   if (!rd(REG_CHIP_ID, &id, 1)) return nullptr;
   if (id == 0x60) return "BMP390";
   if (id == 0x50) return "BMP388";
@@ -41,9 +72,23 @@ static const char* probe(uint8_t addr) {
 
 const char* bmp390_name() { return s_name; }
 
+static const char* begin_common();
 const char* bmp390_begin() {
+  s_spi = false;
   s_name = probe(0x77);
   if (!s_name) s_name = probe(0x76);
+  return begin_common();
+}
+const char* bmp390_begin_spi(int cs, int sck, int mosi, int miso) {
+  s_spi = true; s_cs = cs; s_sck = sck; s_mosi = mosi; s_miso = miso;
+  pinMode(s_cs, OUTPUT);   digitalWrite(s_cs, HIGH);
+  pinMode(s_sck, OUTPUT);  digitalWrite(s_sck, LOW);
+  pinMode(s_mosi, OUTPUT); digitalWrite(s_mosi, LOW);
+  pinMode(s_miso, INPUT);
+  s_name = probe(0);
+  return begin_common();
+}
+static const char* begin_common() {
   if (!s_name) return nullptr;
 
   wr(REG_CMD, 0xB6);

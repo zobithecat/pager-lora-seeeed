@@ -171,9 +171,18 @@ static void env_probe() {
   delay(2);
   Bme280Chip c = bme280_begin(BME280_ADDR);
   if (c != Bme280Chip::None) { g_env_name = (c == Bme280Chip::BME280) ? "BME280" : "BMP280"; g_env_is_bmp3 = false; }
-  else if (const char* n = bmp390_begin())       { g_env_name = n; g_env_is_bmp3 = true; }
-  else return;
-  LOGF("[ENV] sensor: %s%s\n", g_env_name, strcmp(g_env_name, "BME280") ? " (no humidity)" : "");
+  else {
+    const char* n = nullptr;
+#if VEH_ENV_CSB_PIN >= 0 && VEH_ENV_SDO_PIN >= 0
+    Wire.end();                                   // SDA/SCL 선을 SPI MOSI/SCK로 쓴다
+    n = bmp390_begin_spi(VEH_ENV_CSB_PIN, I2C_SCL_PIN, I2C_SDA_PIN, VEH_ENV_SDO_PIN);
+    if (!n) { env_pins_init(); Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); Wire.setTimeOut(20); }
+#endif
+    if (!n) n = bmp390_begin();
+    if (!n) return;
+    g_env_name = n; g_env_is_bmp3 = true;
+  }
+  LOGF("[ENV] sensor: %s%s%s\n", g_env_name, strcmp(g_env_name, "BME280") ? " (no humidity)" : "", g_env_is_bmp3 ? " via SPI" : "");
 }
 static Bme280Reading env_read() {
   if (!g_env_name) return Bme280Reading{};
