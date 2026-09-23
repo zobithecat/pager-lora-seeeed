@@ -4,7 +4,7 @@
 
 | 기능 | 내용 |
 |------|------|
-| 온습도 센싱 | I2C 환경 센서 자동 인식, 10초 주기 forced 측정. **BME280**(온도·습도·기압) / BMP280 / **BMP390·BMP388**(CJMCU-390, 온도·기압만 — 습도 없음) |
+| 온습도 센싱 | **SHT35**(온도·습도) 기본. BME280(+기압) / BMP280·BMP390·BMP388(기압, 습도 없음)도 자동 인식. 10초 주기 single-shot |
 | LoRa discovery | 유효한 봉투를 하나라도 들은 노드 전부 — id / 이름(HB) / RSSI·SNR(직접 수신분만) / 홉 / 마지막 상태 프레임 |
 | 주차 비콘 | 주차 중(= LiPo 구동) 5분마다 `!CAR` 상태 비콘. 포맷은 [PROTOCOL_CAR.md](PROTOCOL_CAR.md) |
 | BLE 대시보드 | 폰이 Central. 상태 · 주변 노드 · 비콘 · 채팅(L2 송수신) · 재난경보(`!AL`) 표시 |
@@ -13,12 +13,9 @@
 ## 하드웨어
 
 - Seeed **XIAO ESP32S3 + Wio-SX1262** 키트 (B2B 커넥터, 납땜 불필요)
-- 환경 센서 I2C 모듈 → `3V3` / `GND` / `SDA=D4(GPIO5)` / **`SCL=D7(GPIO44)`**. 주소 0x76/0x77 자동 탐색
-  - SCL이 XIAO 기본(D5)이 아닌 이유: 이 보드는 D5(GPIO6)·D6(GPIO43)이 무배선 상태에서도 Low로 잡혀 있었다(브리지/손상). 정상 보드면 `config.h`에서 6으로 되돌려도 된다
-  - **CJMCU-390(실제 칩 BMP388, id 0x50)은 SPI로 읽는다** — 4선이 전부 GPIO라 I2C 모드 잠김 문제가 없다:
-    `CSB`→**D1(GPIO2)**=CS, `SCL`→**D7(GPIO44)**=SCK, `SDA`→**D4(GPIO5)**=MOSI(SDI), `SDO`→**D3(GPIO4)**=MISO. `INT` 비움
-  - 같은 선에 BME280을 I2C로 꽂아도 된다(probe가 I2C BME280 → SPI BMP3 순으로 시도)
-  - 안 잡히면 Serial `I` — 버스 스캔 + SDA/SCL 선이 떠 있는지/Low로 잡혔는지 알려준다
+- **SHT35** (온습도, I2C 0x44/0x45) → `VDD→3V3` / `GND→GND` / `SDA→D6(GPIO43)` / `SCL→D7(GPIO44)`. BME280/BMP3xx를 꽂아도 자동 인식(기압까지)
+- **핀 배정 주의 (핀헤더 스택)**: Wio-SX1262 헤더 홀의 `DIO1/BUSY/RST/NSS/RF-SW`는 라디오 신호 그 자체라 XIAO **D0~D4는 사용 불가**. 남는 관통홀은 `D5`·`D6`·`D7` 셋뿐이며 그중 ADC는 D5(GPIO6) 하나 → D5=배터리, D6/D7=I2C
+  - 안 잡히면 Serial `I` — 버스 스캔 + SDA/SCL 선 상태(외부 풀업/떠 있음/Low)
 - **LiPo** 1셀 → XIAO 뒷면 `BAT+`/`BAT-` 패드. USB가 꽂혀 있는 동안 XIAO가 충전한다
 - 전원: 차량 USB 포트
 
@@ -39,17 +36,17 @@
 
 ### 배터리 전압 / 잔량
 
-XIAO ESP32S3는 BAT 패드가 ADC에 연결돼 있지 않다. 저항 2개로 분압해 **D0(A0, GPIO1)** 에 넣어야 읽힌다:
+XIAO ESP32S3는 BAT 패드가 ADC에 연결돼 있지 않다. 저항 2개로 분압해 **D5(GPIO6)** 에 넣어야 읽힌다 (D0는 이 스택에서 라디오 DIO1):
 
 ```
 BAT+ ──[ R1 200k ]──┬──[ R2 200k ]── GND
-                    └── D0 / A0 (GPIO1)        (선택) D0–GND 사이 100 nF
+                    └── D5 (GPIO6)             (선택) D5–GND 사이 100 nF
 ```
 
 - R1 = R2면 아무 값이나 된다(100k–220k 권장, 상시 소모 ~10 µA). 비율이 다르면 `VEH_VBAT_DIVIDER = (R1+R2)/R2`
 - 4.2 V → 핀에는 2.1 V. **BAT+를 GPIO에 직접 꽂으면 안 된다** (3.3 V 초과)
 - 멀티미터로 잰 값과 다르면 `VEH_VBAT_CAL = 실측 / 표시값`
-- 배선이 없으면 핀이 떠서 2.5–4.5 V 밖의 값이 읽히고, 펌웨어는 그걸 "측정 불가"(`-`)로 처리한다
+- 저항을 단 뒤 `config.h`의 `VEH_VBAT_ADC_PIN`을 `6`으로. 2.5–4.5 V 밖의 값은 "측정 불가"(`-`)로 처리한다
 - 잔량 %는 1셀 LiPo OCV 곡선 환산. USB가 꽂혀 있는 동안은 충전 전압이 읽혀 실제보다 높게 나온다
 - 주차 중 15 % 이하(`VEH_BATT_LOW_PCT`)면 비콘 `st`에 `L` 플래그를 세우고 즉시 1발 보낸다
 
@@ -87,6 +84,12 @@ iOS **Bluefy** 앱(또는 Android/데스크톱 Chrome)에서 이 주소를 연�
 `VEH_BLE_PASSKEY`에 6자리 값을 주면 폰→장치 쓰기(= 이 노드 이름으로 메시에 송신할 권한)에
 passkey 본딩을 요구한다. 기본은 0(열림) — 주차된 차 근처의 누구나 연결해 글을 쓸 수 있다는 뜻이니,
 첫 연결이 확인되면 켜는 걸 권한다.
+
+### 라디오 핀 경로
+
+정상 키트(B2B 커넥터 체결)는 Meshtastic `seeed_xiao_s3`와 같은 41/39/40/42/38. 이 개체는 두 보드를
+핀헤더로 스택해 B2B가 안 물리므로 모듈 헤더 홀을 통해 **NSS=D3(4) DIO1=D0(1) BUSY=D1(2) RST=D2(3) RXEN=D4(5)**
+로 들어온다(`config.h`). 어느 경로가 살아 있는지는 `tools/sxprobe`(RadioLib 없는 SPI 프로브)로 확인한다.
 
 ## 무선 규정 메모 (PROTOCOL §2)
 

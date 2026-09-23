@@ -434,8 +434,8 @@ static void i2c_scan() {
   Serial.printf("  CSB (GPIO%d) driven HIGH = I2C mode  |  SDO (GPIO%d) driven %s = addr 0x%02X\n",
                 VEH_ENV_CSB_PIN, VEH_ENV_SDO_PIN, VEH_ENV_SDO_LEVEL ? "HIGH" : "LOW", VEH_ENV_SDO_LEVEL ? 0x77 : 0x76);
 #endif
-  i2c_line_state("SDA/D4", I2C_SDA_PIN);
-  i2c_line_state("SCL/D5", I2C_SCL_PIN);
+  i2c_line_state("SDA/D6", I2C_SDA_PIN);
+  i2c_line_state("SCL/D7", I2C_SCL_PIN);
   env_pins_init();
   // 정상 배선 → SDA/SCL 바꿔서 → 둘 다 50 kHz로. 어디서든 잡히면 원인이 바로 드러난다.
   struct { int sda, scl; uint32_t hz; const char* why; } tries[] = {
@@ -604,9 +604,9 @@ void loop() {
       case 'R': lora_query_rssi(); break;
       case 'B': schedule_beacon(0); Serial.println("[CMD] beacon now"); break;
       case 'S':
-        Serial.printf("[STAT] %s  power_raw=%d  T=%.1fC RH=%.1f%% P=%.1fhPa ok=%d  vbat=%dmV(%d%%)  nodes=%d  ble=%d  cpu=%luMHz\n",
+        Serial.printf("[STAT] %s  power_raw=%d  T=%.1fC RH=%.1f%% P=%s ok=%d  vbat=%dmV(%d%%)  nodes=%d  ble=%d  cpu=%luMHz\n",
                       g_parked ? "PARKED" : "DRIVING", (int)g_power_raw, (double)g_env.temp_c,
-                      (double)g_env.hum_pct, (double)g_env.press_hpa, (int)g_env.ok, g_vbat_mv, battery_pct(g_vbat_mv),
+                      (double)g_env.hum_pct, isnan(g_env.press_hpa) ? "-" : (String(g_env.press_hpa, 1) + "hPa").c_str(), (int)g_env.ok, g_vbat_mv, battery_pct(g_vbat_mv),
                       lora_nodes_count(), (int)ble_dash_ready(), (unsigned long)getCpuFrequencyMhz());
         Serial.printf("[STAT] next beacon: %s\n", build_beacon().c_str());
         break;
