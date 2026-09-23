@@ -6,6 +6,7 @@
 #include "lora.h"
 #include "bme280.h"
 #include "bmp390.h"
+#include "sht3x.h"
 #include "ble_dash.h"
 #include "driver/gpio.h"   // gpio_reset_pin (I2C 진단)
 #if !ARDUINO_USB_MODE
@@ -14,7 +15,7 @@
 
 // ===== 차량 페이저 (P01) =====
 // 하는 일 네 가지:
-//   1. BME280으로 실내 온습도/기압 측정
+//   1. SHT3x / BME280 / BMP3xx로 실내 온습도(기압) 측정
 //   2. 들리는 LoRa 노드 전부를 discovery 테이블로 유지 (lora.cpp)
 //   3. 주차 중(LiPo 구동)엔 !CAR 상태 비콘을 주기 송신 (PROTOCOL_CAR.md)
 //   4. 폰의 Bluefy 웹 대시보드에 BLE로 붙어 discovery / 비콘 / 채팅 제공
@@ -155,7 +156,8 @@ static void power_tick(uint32_t now) {
 // ---------------------------------------------------------------------------
 // 환경 센서: BME280/BMP280 또는 BMP390/388 중 버스에 있는 쪽. 늦게 꽂혀도 10초마다 다시 찾는다.
 static const char* g_env_name = nullptr;          // nullptr = 아직 못 찾음
-static bool        g_env_is_bmp3 = false;
+enum class EnvKind : uint8_t { None, Bme, Bmp3, Sht };
+static EnvKind     g_env_kind = EnvKind::None;
 // 센서 제어 핀을 먼저 잡는다. setup() 맨 앞과, 매 probe 전에도 다시 확인(값이 흔들릴 일은
 // 없지만 비용이 0이고, 나중에 핀을 잘못 건드리는 코드가 들어와도 안전).
 static void env_pins_init() {
@@ -169,9 +171,11 @@ static void env_pins_init() {
 static void env_probe() {
   env_pins_init();
   delay(2);
-  Bme280Chip c = bme280_begin(BME280_ADDR);
-  if (c != Bme280Chip::None) { g_env_name = (c == Bme280Chip::BME280) ? "BME280" : "BMP280"; g_env_is_bmp3 = false; }
-  else {
+  Bme280Chip c;
+  if (sht3x_begin()) { g_env_name = "SHT3x"; g_env_kind = EnvKind::Sht; }
+  else if ((c = bme280_begin(BME280_ADDR)) != Bme280Chip::None) {
+    g_env_name = (c == Bme280Chip::BME280) ? "BME280" : "BMP280"; g_env_kind = EnvKind::Bme;
+  } else {
     const char* n = nullptr;
 #if VEH_ENV_CSB_PIN >= 0 && VEH_ENV_SDO_PIN >= 0
     Wire.end();                                   // SDA/SCL 선을 SPI MOSI/SCK로 쓴다
@@ -180,13 +184,13 @@ static void env_probe() {
 #endif
     if (!n) n = bmp390_begin();
     if (!n) return;
-    g_env_name = n; g_env_is_bmp3 = true;
+    g_env_name = n; g_env_kind = EnvKind::Bmp3;
   }
-  LOGF("[ENV] sensor: %s%s%s\n", g_env_name, strcmp(g_env_name, "BME280") ? " (no humidity)" : "", g_env_is_bmp3 ? " via SPI" : "");
+  LOGF("[ENV] sensor: %s%s%s\n", g_env_name, g_env_kind == EnvKind::Bmp3 || !strcmp(g_env_name, "BMP280") ? " (no humidity)" : "", g_env_kind == EnvKind::Bmp3 ? " via SPI" : "");
 }
 static Bme280Reading env_read() {
   if (!g_env_name) return Bme280Reading{};
-  Bme280Reading r = g_env_is_bmp3 ? bmp390_read() : bme280_read();
+  Bme280Reading r = g_env_kind == EnvKind::Sht ? sht3x_read() : g_env_kind == EnvKind::Bmp3 ? bmp390_read() : bme280_read();
   if (!r.ok) g_env_name = nullptr;                // 뽑혔거나 버스 오류 → 다음 주기에 다시 probe
   return r;
 }
@@ -221,7 +225,7 @@ static String build_beacon() {
   String s = "!CAR\t" NODE_ID "\t" + st + "\t";
   s += g_env.ok ? String(g_env.temp_c, 1) : String("-");                          s += '\t';
   s += (g_env.ok && g_env.has_humidity) ? String(g_env.hum_pct, 1) : String("-"); s += '\t';
-  s += g_env.ok ? String((int)lroundf(g_env.press_hpa)) : String("-");            s += '\t';
+  s += (g_env.ok && !isnan(g_env.press_hpa)) ? String((int)lroundf(g_env.press_hpa)) : String("-");            s += '\t';
   s += (g_vbat_mv >= 0) ? String(g_vbat_mv) : String("-");                        s += '\t';
   s += String((unsigned long)(millis() / 1000));                                  s += '\t';
   s += String(lora_nodes_count());
@@ -266,7 +270,7 @@ static void send_status() {
   s += ",\"sensor\":\""; s += chip; s += "\"";
   s += ",\"temp\":" + num_or_null(g_env.ok, g_env.temp_c, 1);
   s += ",\"hum\":"  + num_or_null(g_env.ok && g_env.has_humidity, g_env.hum_pct, 1);
-  s += ",\"hpa\":"  + num_or_null(g_env.ok, g_env.press_hpa, 1);
+  s += ",\"hpa\":"  + num_or_null(g_env.ok && !isnan(g_env.press_hpa), g_env.press_hpa, 1);
   s += ",\"hot\":"; s += env_hot() ? "true" : "false";
   s += ",\"vbat\":" + (g_vbat_mv >= 0 ? String(g_vbat_mv) : String("null"));
   s += ",\"bpct\":" + (g_vbat_mv >= 0 ? String(battery_pct(g_vbat_mv)) : String("null"));

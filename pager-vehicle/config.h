@@ -20,7 +20,7 @@
 #define FW_VERSION         "veh-1.0"
 
 // ----- I2C / BME280 -----
-#define I2C_SDA_PIN        5         // D4
+#define I2C_SDA_PIN        43        // D6 (GPIO43) — D4는 라디오 RF_SW 라인
 // SCL은 XIAO 기본 D5(GPIO6)가 아니라 D7(GPIO44)다. 이 개체는 D5(GPIO6)와 D6(GPIO43)이 아무
 // 배선 없이도 Low로 잡혀 있었다(2026-09-22 핀 프로브 실측 — 브리지 또는 핀 손상). D5/D6는 안 쓴다.
 #define I2C_SCL_PIN        44        // D7
@@ -30,8 +30,11 @@
 // I2C로는 이 보드가 끝내 응답하지 않았고 SPI로는 바로 잡혔다(2026-09-22). BME280은 여전히
 // 같은 SDA/SCL에서 I2C로 먼저 탐색한다. 아래 두 핀이 -1이면 BMP3도 I2C(0x76/0x77)로 시도.
 // GPIO3(D2)은 ESP32-S3 스트래핑 핀이라 피했다. -1이면 그 핀은 안 건드린다(외부 점퍼로 처리).
-#define VEH_ENV_CSB_PIN    2         // D1
-#define VEH_ENV_SDO_PIN    4         // D3
+// ★ 2026-09-23 스키매틱 확인: Wio-SX1262(B2B) 헤더 홀의 DIO1/BUSY/RST/NSS/RF-SW는 라디오 신호와
+//   같은 네트다. 스택 상태에서 XIAO D0~D4(GPIO1,2,3,4,5)는 전부 라디오 라인 → 절대 쓰지 말 것.
+//   센서/ADC용으로 남는 핀은 D5(GPIO6)·D6(GPIO43)·D7(GPIO44)뿐.
+#define VEH_ENV_CSB_PIN    (-1)      // BMP3 SPI 경로 비활성 (D1/D3이 라디오 BUSY/NSS였다)
+#define VEH_ENV_SDO_PIN    (-1)
 #define VEH_ENV_SDO_LEVEL  LOW       // → 0x76
 #define VEH_SENSOR_MS      10000UL   // forced-mode 측정 주기 (자체 발열 최소화)
 // 주차된 차 실내는 한여름 70°C를 넘는다. LiPo는 60°C 위에서 위험하므로 비콘/대시보드에
@@ -51,7 +54,7 @@
 //   R1 = R2면 DIVIDER 2.0. 다른 값을 쓰면 (R1+R2)/R2. 잡음이 크면 A0–GND에 100 nF.
 // 배선이 없으면 핀이 떠서 엉뚱한 값이 읽히므로, 2.5–4.5 V를 벗어난 값은 "측정 불가"로 버린다
 // → 저항을 달기 전에도 이 설정 그대로 둬도 된다. 기능을 아예 끄려면 -1.
-#define VEH_VBAT_ADC_PIN    1
+#define VEH_VBAT_ADC_PIN    (-1)     // D0(GPIO1)은 라디오 DIO1 라인 — 분압 배선 자리는 D5/D6/D7 중 하나로 재배정 예정
 #define VEH_VBAT_DIVIDER    2.0f
 #define VEH_VBAT_CAL        1.000f   // 멀티미터 실측 / 표시값. 저항 오차(±1–5 %) 보정용
 #define VEH_BATT_LOW_PCT    15       // 주차 중 이 이하로 떨어지면 비콘에 'L' 플래그 + 즉시 1발
