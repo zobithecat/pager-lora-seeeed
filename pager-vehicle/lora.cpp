@@ -828,6 +828,12 @@ static void radio_read_packet() {
   rx_dispatch(String((const char*)buf), rssi, snr);
 }
 
+void lora_test_inject(const String& envelope_line) {
+  if (!s_radio_mtx || xSemaphoreTake(s_radio_mtx, pdMS_TO_TICKS(2000)) != pdTRUE) return;
+  rx_dispatch(envelope_line, -60, 9.0f);
+  xSemaphoreGive(s_radio_mtx);
+}
+
 void lora_tick() {
   // Share the radio with the TX task: if an L2 frame is in flight, skip this tick.
   if (!s_radio_mtx || xSemaphoreTake(s_radio_mtx, 0) != pdTRUE) return;

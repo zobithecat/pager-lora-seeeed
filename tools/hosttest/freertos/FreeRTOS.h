@@ -16,6 +16,7 @@ inline int xSemaphoreTake(SemaphoreHandle_t, uint32_t) { if (g_mtx_locked) retur
 inline void xSemaphoreGive(SemaphoreHandle_t) { g_mtx_locked = false; }
 inline QueueHandle_t xQueueCreate(size_t n, size_t item) { return new QMock{item, n, {}}; }
 inline int xQueueSend(QueueHandle_t q, const void* p, uint32_t) { if (q->q.size() >= q->cap) return pdFALSE; q->q.emplace_back((const uint8_t*)p, (const uint8_t*)p + q->item); return pdTRUE; }
+inline size_t uxQueueMessagesWaiting(QueueHandle_t q) { return q->q.size(); }
 inline int xQueueReceive(QueueHandle_t q, void* p, uint32_t) { if (q->q.empty()) return pdFALSE; memcpy(p, q->q.front().data(), q->item); q->q.pop_front(); return pdTRUE; }
 inline int xTaskCreate(void (*)(void*), const char*, int, void*, int, void*) { return pdTRUE; }
 extern uint32_t g_now;

@@ -588,7 +588,7 @@ void setup() {
        (int)esp_reset_reason(),
        g_wake_cause == ESP_SLEEP_WAKEUP_TIMER ? "TIMER" : g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? "LORA-DIO1" : "cold",
        (unsigned long)g_rtc_boots, (unsigned long)uptime_s());
-  LOGF("Serial: S=status  I=i2c scan  N=nodes  X=RF config  R=last RSSI  B=beacon now  Z=deep sleep now  M<text>=send chat\n");
+  LOGF("Serial: S=status  I=i2c scan  N=nodes  X=RF config  R=last RSSI  B=beacon now  P=inject addressed PING  Z=deep sleep now  M<text>=send chat\n");
 
 #if VEH_VBUS_SENSE_PIN >= 0
   pinMode(VEH_VBUS_SENSE_PIN, INPUT);
@@ -691,6 +691,10 @@ void loop() {
       case 'X': lora_probe_at(); break;
       case 'R': lora_query_rssi(); break;
       case 'B': schedule_beacon(0); Serial.println("[CMD] beacon now"); break;
+      case 'P': {                            // 벤치 테스트: 우리 앞으로 온 PING 주입 → PONG + 30분 각성이어야 한다
+        static uint32_t pid = 777000;
+        lora_test_inject("R|TFF|" + String(pid++) + "|3|PING\t7\tTFF\t" NODE_ID);
+        Serial.println("[CMD] injected addressed PING"); break; }
       case 'Z':                              // 벤치 테스트: USB 꽂힌 채로 강제 딥슬립 (USB CDC는 끊겼다가 wake 후 재열거)
         Serial.println("[CMD] forcing deep sleep now"); g_rtc_was_parked = true; go_to_sleep(); break;
       case 'S':

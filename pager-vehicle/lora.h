@@ -113,3 +113,7 @@ void lora_set_my_id(const String& id);
 
 // 노드 테이블 + dedup 링 통계 Serial 출력.
 void lora_dump_neighbors();
+
+// 진단 주입: 봉투째("R|src|pktid|ttl|payload") 수신 경로에 넣는다 — 실제 RF 없이 dedup·분류·콜백까지
+// 전부 탄다. 벤치에서 주소지정 PING/채팅 수신 동작을 확인할 때 쓴다.
+void lora_test_inject(const String& envelope_line);

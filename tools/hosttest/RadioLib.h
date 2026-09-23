@@ -20,9 +20,10 @@ struct SX1262 {
   int setCRC(int) { return 0; }
   void setPacketReceivedAction(void (*)()) {}
   int startReceive() { return 0; }
+  int startReceiveDutyCycleAuto() { return 0; }
+  size_t getPacketLength() { return g_rx_pkt.size(); }
   int scanChannel() { if (g_cad_busy_n > 0) { g_cad_busy_n--; return RADIOLIB_LORA_DETECTED; } return RADIOLIB_CHANNEL_FREE; }
   int transmit(String& w) { g_tx.push_back({w.s, g_now}); g_now += 250; return 0; }
-  size_t getPacketLength() { return g_rx_pkt.size(); }
   int readData(uint8_t* b, size_t n) { memcpy(b, g_rx_pkt.data(), n); return 0; }
   float getRSSI() { return (float)g_rx_rssi; }
   float getSNR() { return 9.5f; }
