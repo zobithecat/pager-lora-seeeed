@@ -47,7 +47,8 @@ Bme280Reading sht3x_read() {
   uint16_t t = (d[0] << 8) | d[1], h = (d[3] << 8) | d[4];
   r.temp_c  = -45.0f + 175.0f * (float)t / 65535.0f;
   r.hum_pct = 100.0f * (float)h / 65535.0f;
-  if (r.hum_pct < 0) r.hum_pct = 0; if (r.hum_pct > 100) r.hum_pct = 100;
+  if (r.hum_pct < 0) r.hum_pct = 0;
+  if (r.hum_pct > 100) r.hum_pct = 100;
   r.ok = true;
   return r;
 }

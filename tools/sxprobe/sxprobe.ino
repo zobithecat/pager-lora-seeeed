@@ -20,19 +20,20 @@ static void probe(const Pins& p) {
   SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
   digitalWrite(p.cs, LOW); SPI.transfer(0xC0); uint8_t st = SPI.transfer(0x00); digitalWrite(p.cs, HIGH);
   waitBusyLow(p.busy, 50);
-  // MOSI 검증: SetStandby(STDBY_XOSC) → 상태 mode 비트(6:4)가 010(RC) → 011(XOSC)으로 바뀌어야 한다.
-  // MOSI가 끊기면 칩은 NOP만 받아 상태를 계속 돌려주되 mode는 안 바뀐다.
-  digitalWrite(p.cs, LOW); SPI.transfer(0x80); SPI.transfer(0x01); digitalWrite(p.cs, HIGH);
-  waitBusyLow(p.busy, 50); delay(2);
-  digitalWrite(p.cs, LOW); SPI.transfer(0xC0); uint8_t st2 = SPI.transfer(0x00); digitalWrite(p.cs, HIGH);
-  waitBusyLow(p.busy, 50);
-  Serial.printf("  MOSI test: mode before=%u after SetStandby(XOSC)=%u -> %s\n", (st >> 4) & 7, (st2 >> 4) & 7, ((st2 >> 4) & 7) == 3 ? "MOSI OK" : "MOSI NOT REACHING CHIP");
   uint8_t ver[17] = {0};
   digitalWrite(p.cs, LOW); SPI.transfer(0x1D); SPI.transfer(0x03); SPI.transfer(0x20); SPI.transfer(0x00);
   for (int i = 0; i < 16; i++) ver[i] = SPI.transfer(0x00);
   digitalWrite(p.cs, HIGH); SPI.endTransaction();
   Serial.printf("  GetStatus=0x%02X  (0x00/0xFF/0x7F = no chip; 0x22/0x2A/0xA2 = alive)\n", st);
-  Serial.print("  version: \""); for (int i = 0; i < 16; i++) Serial.print((ver[i] >= 32 && ver[i] < 127) ? (char)ver[i] : '.'); Serial.println("\"");
+  Serial.print("  version: \""); for (int i = 0; i < 16; i++) Serial.print((ver[i] >= 32 && ver[i] < 127) ? (char)ver[i] : '.'); Serial.print("\"  hex:");
+  for (int i = 0; i < 16; i++) Serial.printf(" %02X", ver[i]); Serial.println();
+  // 확실한 MOSI 검사: ReadRegister 0x0740 (LoRa sync word MSB, 리셋 기본값 0x14).
+  //   0x14 → 명령이 칩에 들어감(MOSI OK). 상태 바이트(0xA?/0x2?)만 반복 → 칩이 NOP만 받음 = MOSI 끊김.
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  waitBusyLow(p.busy, 50);
+  digitalWrite(p.cs, LOW); SPI.transfer(0x1D); SPI.transfer(0x07); SPI.transfer(0x40); uint8_t s0 = SPI.transfer(0x00); uint8_t sw = SPI.transfer(0x00); digitalWrite(p.cs, HIGH);
+  SPI.endTransaction();
+  Serial.printf("  reg 0x0740 = 0x%02X (status byte 0x%02X)  -> %s\n", sw, s0, sw == 0x14 ? "MOSI OK (cmd reached chip)" : "cmd NOT reaching chip (MOSI/SCK/NSS)");
   pinMode(p.rst, INPUT); pinMode(p.cs, INPUT);
 }
 void setup() { Serial.begin(115200); delay(1500); SPI.begin(7, 8, 9, -1); }
