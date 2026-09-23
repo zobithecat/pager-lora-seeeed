@@ -70,7 +70,9 @@
 // 요구: LORA_DIO1_PIN이 RTC GPIO(ESP32-S3: GPIO0~21)여야 한다 — 헤더 경로(GPIO1)는 OK, B2B(39)는 불가.
 #define VEH_SLEEP_ENABLE       1
 #define VEH_SLEEP_WAKE_S       180       // 타이머 wake 주기 = 슬립 중 비콘 주기 (PROTOCOL_CAR: ≥ 60 s)
+#ifndef VEH_AWAKE_MS                     // 테스트 빌드: --build-property "compiler.cpp.extra_flags=-DVEH_AWAKE_MS=120000UL"
 #define VEH_AWAKE_MS           1800000UL // 주차 직후 / 깨우는 신호 뒤 각성 시간 (30분)
+#endif
 #define VEH_WAKE_WINDOW_MS     15000UL   // 타이머 wake 창: 비콘 + BLE 광고 + USB(주행) 재감지 여유
 #define VEH_WAKE_SHORT_MS      25000UL   // 남의 프레임으로 깼을 때: 이어지는 청크/응답을 받을 시간
 #define VEH_BLE_LINGER_MS      60000UL   // 폰이 끊긴 뒤 이만큼은 더 깨어 있는다(재연결 여유)
