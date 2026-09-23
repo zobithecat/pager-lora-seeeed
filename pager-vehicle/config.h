@@ -4,7 +4,7 @@
 
 // ===== 차량 페이저 (P01) =====
 // Hardware: Seeed XIAO ESP32S3 + Wio-SX1262 kit (B2B) + BME280 (I2C) + LiPo (XIAO BAT 패드)
-//   LoRa SX1262: SPI(SCK=7 MISO=8 MOSI=9) + NSS=41 DIO1=39 BUSY=40 RST=42
+//   LoRa SX1262: SPI(SCK=7 MISO=8 MOSI=9) + 헤더 경로 NSS=4 DIO1=1 BUSY=2 RST=3 RXEN=5 (아래 참고)
 //                RF switch = SX1262 DIO2 (internal), TCXO = DIO3 @ 1.8V
 //   I2C(센서):   SDA=GPIO5 (D4), SCL=GPIO44 (D7)  ← D5/D6는 이 보드에서 불량
 //   전원: 주행 중 = USB 5V, 주차 중 = LiPo. XIAO가 USB 있을 때 LiPo를 충전한다.
@@ -76,11 +76,15 @@
 #define LORA_SCK_PIN         7
 #define LORA_MISO_PIN        8
 #define LORA_MOSI_PIN        9
-#define LORA_NSS_PIN         41
-#define LORA_DIO1_PIN        39
-#define LORA_BUSY_PIN        40
-#define LORA_RST_PIN         42
-#define LORA_RXEN_PIN        38     // RF 스위치 RX enable (수신 중 HIGH). TX 경로는 SX1262 DIO2가 제어
+// ★ 이 개체는 XIAO와 Wio-SX1262를 2.54 mm 핀헤더로 납땜해 스택했고, 그 과정에서 B2B 커넥터가
+//   떨어졌다(2026-09-23 프로브: B2B BUSY floating, 헤더 BUSY driven). 라디오 제어선은 모듈 헤더
+//   홀(DIO1/BUSY/RST/NSS/RF-SW) = XIAO D0~D4로 들어온다. SPI(7/8/9)는 두 경로가 같다.
+//   B2B가 제대로 물린 정상 키트라면 41/39/40/42/38 (Meshtastic seeed_xiao_s3)로 되돌릴 것.
+#define LORA_NSS_PIN         4      // D3 = NSS
+#define LORA_DIO1_PIN        1      // D0 = DIO1
+#define LORA_BUSY_PIN        2      // D1 = BUSY
+#define LORA_RST_PIN         3      // D2 = RST (ESP32-S3 스트래핑 핀이지만 부팅 후 출력으로 쓰는 건 무방)
+#define LORA_RXEN_PIN        5      // D4 = RF_SW (수신 중 HIGH). TX 경로는 SX1262 DIO2가 제어
 #define LORA_TCXO_V          1.8f
 #define LORA_MAX_LINE_BYTES  60     // 프로토콜 한 줄 = 1 LoRa 패킷 본문 상한 (§5)
 
