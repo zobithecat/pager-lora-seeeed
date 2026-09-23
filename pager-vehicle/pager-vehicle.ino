@@ -129,7 +129,7 @@ static bool vehicle_power_present() {
 static void read_vbat() {
 #if VEH_VBAT_ADC_PIN >= 0
   uint32_t acc = 0;
-  for (int i = 0; i < 16; i++) acc += analogReadMilliVolts(VEH_VBAT_ADC_PIN);
+  for (int i = 0; i < 16; i++) { acc += analogReadMilliVolts(VEH_VBAT_ADC_PIN); delayMicroseconds(300); }  // 고임피던스 분압: 샘플 사이 콘덴서 회복 시간
   float mv = (float)acc / 16.0f * VEH_VBAT_DIVIDER * VEH_VBAT_CAL;
   if (mv < 2500.0f || mv > 4500.0f) {            // 1셀 LiPo일 수 없는 값 = 핀이 떠 있다
     g_vbat_mv = -1;

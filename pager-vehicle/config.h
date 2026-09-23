@@ -46,12 +46,14 @@
 #define VEH_VBUS_SENSE_PIN  (-1)     // -1 = 미사용 (USB 호스트 감지만)
 #define VEH_POWER_DEBOUNCE_MS 10000UL // 시동 크랭킹 중 순간 끊김에 흔들리지 않게
 // 배터리 전압: XIAO ESP32S3는 BAT가 ADC에 안 물려 있어서 분압 배선이 있어야 읽힌다.
-//     BAT+ ──[R1 200k]──┬──[R2 200k]── GND
-//                       └── D5 (GPIO6, ADC1_CH5)      (상시 소모 ~10 µA)
-//   R1 = R2면 DIVIDER 2.0. 다른 값을 쓰면 (R1+R2)/R2. 잡음이 크면 A0–GND에 100 nF.
+//     BAT+ ──[R1 2.3M]──┬──[R2 2.3M]── GND
+//                       └──┬── D5 (GPIO6, ADC1_CH5)   (상시 소모 ~1 µA)
+//                         ═╪═ C 100 nF~1 µF → GND     ← 필수: 소스 임피던스 1.15 MΩ은 ESP32 SAR ADC의
+//                                                       샘플 커패시터를 못 채운다. 콘덴서가 샘플 전하를 대준다.
+//   R1 = R2면 DIVIDER 2.0. 다른 값을 쓰면 (R1+R2)/R2. 실측과 다르면 VEH_VBAT_CAL로 보정.
 // 배선이 없으면 핀이 떠서 엉뚱한 값이 읽히므로, 2.5–4.5 V를 벗어난 값은 "측정 불가"로 버린다
 // → 저항을 달기 전에도 이 설정 그대로 둬도 된다. 기능을 아예 끄려면 -1.
-#define VEH_VBAT_ADC_PIN    (-1)     // 분압 저항을 달면 6(D5). D0(GPIO1)은 라디오 DIO1 라인이라 불가
+#define VEH_VBAT_ADC_PIN    6        // D5 (GPIO6). 배선 전엔 값이 2.5–4.5 V 범위 밖이라 "측정 불가"로 나온다
 #define VEH_VBAT_DIVIDER    2.0f
 #define VEH_VBAT_CAL        1.000f   // 멀티미터 실측 / 표시값. 저항 오차(±1–5 %) 보정용
 #define VEH_BATT_LOW_PCT    15       // 주차 중 이 이하로 떨어지면 비콘에 'L' 플래그 + 즉시 1발
