@@ -14,6 +14,7 @@
 #define NUS_TX_UUID      "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"   // 장치 → 폰 (notify)
 
 void ble_dash_begin();
+void ble_dash_end();                           // 딥슬립 직전: 광고/연결 정리 후 스택 해제
 void ble_dash_tick();                          // main loop에서 매번: 송신 FIFO를 조금씩 비운다
 bool ble_dash_ready();                         // 연결됨 + 폰이 notify 구독함
 bool ble_dash_consume_just_ready();            // 방금 구독이 시작됐으면 1회 true (→ 전체 상태 재생)

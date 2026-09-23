@@ -129,6 +129,14 @@ void ble_dash_begin() {
        VEH_BLE_PASSKEY ? " — passkey required for writes" : "");
 }
 
+void ble_dash_end() {
+  // NimBLEDevice::deinit()는 호스트 태스크 종료 경로에서 널 포인터를 불러 panic한다(NimBLE 2.5.1 +
+  // esp32 core 3.3.x, PC=0 in host_task). 딥슬립은 어차피 BLE 컨트롤러 전원을 내리므로 광고만 멈춘다.
+  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+  if (adv) adv->stop();
+  s_connected = s_subscribed = false;
+}
+
 bool ble_dash_ready() { return s_connected && s_subscribed; }
 
 bool ble_dash_consume_just_ready() {

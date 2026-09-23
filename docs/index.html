@@ -330,7 +330,10 @@ function renderStatus() {
   const s = status; if (!s) return;
   const drift = (Date.now() - statusAt) / 1000;
   $("modeText").textContent = s.parked ? "주차 중" : "주행 중";
-  $("modeSub").textContent = s.parked ? "LiPo 배터리로 동작 · 상태 비콘 송신 중" : "차량 전원(USB 호스트) 감지됨 · 비콘 쉬는 중";
+  $("modeSub").textContent = s.parked
+    ? (s.awake === null || s.awake === undefined ? "LiPo 배터리로 동작 · 상태 비콘 송신 중"
+       : `LiPo 동작 · ${dur(Math.max(0, s.awake - drift))} 뒤 딥슬립 (연결 중엔 안 잠 · 슬립 중엔 ${hello ? Math.round(hello.sleep_s / 60) : 3}분마다 비콘)`)
+    : "차량 전원(USB 호스트) 감지됨 · 비콘 쉬는 중";
   $("modePill").textContent = s.parked ? "P" : "D";
   $("modePill").classList.toggle("p", s.parked);
   $("sensorName").textContent = s.sensor === "none" ? "· 센서 없음" : "· " + s.sensor;

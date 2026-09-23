@@ -31,7 +31,10 @@ typedef void (*LoraConnStateCb)(bool connected);
 // 모든 L1 라인이 (스택 자체 처리 후) 여기로도 온다. type은 '!' 뺀 토큰 ("CAR", "AL" …).
 typedef void (*LoraL1Cb)(const String& type, const String& args, const LoraRxInfo& info);
 
-void lora_begin();
+// hw_reset=false: 딥슬립에서 DIO1로 깬 직후처럼 SX1262가 이미 설정된 채 살아 있을 때. 칩을 리셋하지
+// 않고 재초기화하며, 수신 버퍼에 남아 있는(우리를 깨운) 패킷이 있으면 먼저 읽어 콜백으로 넘긴다.
+// → 콜백(lora_set_callbacks 등)은 lora_begin 전에 등록해 둘 것.
+void lora_begin(bool hw_reset = true);
 void lora_tick();                                      // main loop에서 매번 호출
 void lora_send_message(const String& text);            // L2. 비동기: 큐에 넣고 즉시 반환
 bool lora_tx_consume_done();                            // 큐 송신 완료 시 1회 true (main loop용)
@@ -75,8 +78,18 @@ struct LoraStats {
   uint32_t tx_frames, lbt_defers;
   int      last_rssi; bool last_rssi_valid;
   int      radio_status;                     // radio.begin() 결과. 0=OK, -2=SX1262 응답 없음(미장착/접촉불량)
+  uint32_t resumed_len;                      // lora_begin(false)이 RX 버퍼에서 건져 처리한 패킷 길이 (0=없음)
 };
 void lora_get_stats(LoraStats* out);
+
+// ===== 딥슬립 협조 =====
+// 송신할 게 하나도 없고(L1 큐·PONG·L2 큐·진행 중 프레임) 라디오가 한가하면 true.
+bool lora_idle();
+// 라디오를 RX 듀티사이클(프리앰블 감지 창만 주기적으로 여는 저전력 수신)로 두고 라디오 뮤텍스를
+// 잡은 채 반환한다 — 호출 직후 esp_deep_sleep_start() 할 것. 패킷이 오면 DIO1이 High가 되므로
+// LORA_DIO1_PIN을 ext0 wake 소스로 쓴다 (RTC GPIO여야 함). 실패 시 false(라디오는 일반 RX).
+bool lora_sleep_arm();
+int  lora_dio1_pin();
 
 // SX1262는 주파수 고정(lora_rf.h). DX-LR02 채널 개념 없음 — 호출 시 안내만 출력.
 // .ino의 'Cnn' Serial 명령 호환용으로 시그니처만 유지.

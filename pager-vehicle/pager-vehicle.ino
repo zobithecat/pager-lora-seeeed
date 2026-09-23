@@ -8,7 +8,9 @@
 #include "bmp390.h"
 #include "sht3x.h"
 #include "ble_dash.h"
-#include "driver/gpio.h"   // gpio_reset_pin (I2C 진단)
+#include "driver/gpio.h"   // gpio_reset_pin (I2C 진단), gpio_hold_en (딥슬립)
+#include <esp_sleep.h>
+#include <time.h>
 #if !ARDUINO_USB_MODE
 #include "tusb.h"             // tud_mounted / tud_suspended (USB-OTG/TinyUSB 모드)
 #endif
@@ -23,6 +25,16 @@
 
 static String   g_display_id;
 static uint32_t g_boot_cpu_mhz = 240;
+
+// ---- 딥슬립을 건너 살아남는 것들 (RTC slow memory) ----
+RTC_DATA_ATTR static uint32_t g_rtc_boots        = 0;
+RTC_DATA_ATTR static time_t   g_rtc_first_boot   = 0;    // RTC 시계는 딥슬립 중에도 간다 → 가동시간 기준
+RTC_DATA_ATTR static uint32_t g_rtc_beacon_count = 0;
+RTC_DATA_ATTR static bool     g_rtc_was_parked   = false;
+static esp_sleep_wakeup_cause_t g_wake_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
+static bool     g_woke_from_sleep = false;
+static uint32_t g_awake_until_ms  = 0;       // 주차 중 이 시각이 지나면 딥슬립
+static const char* g_awake_why    = "";
 
 // 전원/주차 상태
 static bool     g_parked        = false;
@@ -39,7 +51,7 @@ static bool     g_batt_low_sent = false;
 // 비콘
 static uint32_t g_next_beacon_ms = 0;        // 0 = 예약 없음
 static String   g_last_beacon;
-static uint32_t g_beacon_count = 0;
+#define g_beacon_count g_rtc_beacon_count      // 딥슬립을 건너 누적
 
 // 대시보드 push
 static uint32_t g_next_status_ms = 0;
@@ -82,6 +94,23 @@ static void hist_push(const String& body) {
 static void dash_event(const String& body) {
   hist_push(body);
   ble_dash_send_line("{" + body + ",\"age\":0}");
+}
+
+static String ls_resumed_note() {
+  LoraStats ls; lora_get_stats(&ls);
+  return ls.resumed_len ? " (woke by a " + String((unsigned long)ls.resumed_len) + " B frame, read from RX buffer)" : String("");
+}
+
+static uint32_t uptime_s() {
+  time_t now = time(nullptr);
+  if (g_rtc_first_boot == 0 || now < g_rtc_first_boot) g_rtc_first_boot = now;
+  return (uint32_t)(now - g_rtc_first_boot);
+}
+
+// 깨어 있기: 지금부터 최소 ms 동안은 슬립하지 않는다 (더 긴 예약이 있으면 그대로).
+static void stay_awake(uint32_t ms, const char* why) {
+  uint32_t until = millis() + ms;
+  if ((int32_t)(until - g_awake_until_ms) > 0) { g_awake_until_ms = until; g_awake_why = why; }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +169,8 @@ static void apply_parked(bool parked, bool announce) {
   // 상태가 바뀌면 한 발 쏜다: 주차 시작도, "차가 출발했다"도 지켜보는 쪽엔 뉴스다.
   // 그 뒤로는 주기 설정(주행 0 = 끔)을 따른다.
   if (announce) schedule_beacon(parked ? 15000 : 5000);
+  if (parked && announce) stay_awake(VEH_AWAKE_MS, "parked");   // 방금 세운 차(실제 전환) — 30분은 폰이 붙을 수 있게 깨어 있는다.
+                                                                 // 슬립에서 깨며 주차로 복원될 땐(announce=false) setup()이 짧은 창만 준다.
   g_next_status_ms = 0;
 }
 
@@ -227,7 +258,7 @@ static String build_beacon() {
   s += (g_env.ok && g_env.has_humidity) ? String(g_env.hum_pct, 1) : String("-"); s += '\t';
   s += (g_env.ok && !isnan(g_env.press_hpa)) ? String((int)lroundf(g_env.press_hpa)) : String("-");            s += '\t';
   s += (g_vbat_mv >= 0) ? String(g_vbat_mv) : String("-");                        s += '\t';
-  s += String((unsigned long)(millis() / 1000));                                  s += '\t';
+  s += String((unsigned long)uptime_s());                                         s += '\t';
   s += String(lora_nodes_count());
   return s;
 }
@@ -257,7 +288,7 @@ static void send_hello() {
              "\",\"fw\":\"" FW_VERSION "\",\"proto\":\"1.22\"";
   s += ",\"freq\":" + String((double)RF_FREQ_MHZ, 1) + ",\"sf\":" + String(RF_SF) +
        ",\"dbm\":" + String(LORA_TX_DBM) + ",\"bcn_s\":" + String((unsigned long)(VEH_BEACON_PARKED_MS / 1000)) +
-       ",\"warn_c\":" + String((double)VEH_TEMP_WARN_C, 0) + "}";
+       ",\"warn_c\":" + String((double)VEH_TEMP_WARN_C, 0) + ",\"sleep_s\":" + String(VEH_SLEEP_ENABLE ? VEH_SLEEP_WAKE_S : 0) + "}";
   ble_dash_send_line(s);
 }
 
@@ -275,7 +306,8 @@ static void send_status() {
   s += ",\"vbat\":" + (g_vbat_mv >= 0 ? String(g_vbat_mv) : String("null"));
   s += ",\"bpct\":" + (g_vbat_mv >= 0 ? String(battery_pct(g_vbat_mv)) : String("null"));
   s += ",\"blow\":"; s += batt_low() ? "true" : "false";
-  s += ",\"up\":" + String((unsigned long)(now / 1000));
+  s += ",\"up\":" + String((unsigned long)uptime_s());
+  s += ",\"awake\":" + ((g_parked && VEH_SLEEP_ENABLE) ? String((long)((int32_t)(g_awake_until_ms - now) / 1000)) : String("null"));
   s += ",\"nodes\":" + String(lora_nodes_count());
   s += ",\"link\":"; s += lora_connected() ? "true" : "false";
   s += ",\"radio\":" + String(ls.radio_status);
@@ -388,6 +420,7 @@ static String rx_meta_json(const LoraRxInfo& info) {
 }
 
 static void on_lora_msg(const String& text, const LoraRxInfo& info) {
+  stay_awake(VEH_AWAKE_MS, "chat rx");           // 누가 말을 걸었다 → 30분 깨어 있는다
   LOGF("[RX] from=%s rssi=%d hops=%d%s \"%s\"\n", info.src, info.rssi, info.hops,
        info.partial ? " PARTIAL" : "", text.c_str());
   dash_event("\"t\":\"msg\",\"dir\":\"rx\"," + rx_meta_json(info) + ",\"partial\":" +
@@ -507,18 +540,55 @@ static void spi_probe() {
 }
 
 // ---------------------------------------------------------------------------
+// 딥슬립
+// ---------------------------------------------------------------------------
+static const int kHoldPins[] = { LORA_RST_PIN, LORA_NSS_PIN, LORA_RXEN_PIN };   // 슬립 중 라디오가 RX를 유지하려면 HIGH로 잡혀 있어야
+
+static void go_to_sleep() {
+  LOGF("[SLEEP] deep sleep: wake in %us or on LoRa DIO1 (GPIO%d). up=%lus boots=%lu\n",
+       VEH_SLEEP_WAKE_S, lora_dio1_pin(), (unsigned long)uptime_s(), (unsigned long)g_rtc_boots);
+  Serial.flush();
+  ble_dash_end();
+  lora_sleep_arm();                                // 라디오: 듀티사이클 RX, DIO1 = RxDone
+  for (int pin : kHoldPins) gpio_hold_en((gpio_num_t)pin);
+  gpio_deep_sleep_hold_en();
+  esp_sleep_enable_timer_wakeup((uint64_t)VEH_SLEEP_WAKE_S * 1000000ULL);
+  if (lora_dio1_pin() <= 21) esp_sleep_enable_ext0_wakeup((gpio_num_t)lora_dio1_pin(), 1);
+  g_rtc_was_parked = true;
+  esp_deep_sleep_start();
+}
+
+static void sleep_tick(uint32_t now) {
+#if VEH_SLEEP_ENABLE
+  if (!g_parked || g_power_raw) return;            // 주행 중이거나 USB가 보이면 절대 안 잔다
+  if ((int32_t)(now - g_awake_until_ms) < 0) return;
+  if (!lora_idle()) return;                        // 비콘/PONG/채팅 송신·수신이 끝날 때까지
+  go_to_sleep();
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // Setup / Loop
 // ---------------------------------------------------------------------------
 void setup() {
+  g_wake_cause = esp_sleep_get_wakeup_cause();
+  g_woke_from_sleep = (g_wake_cause == ESP_SLEEP_WAKEUP_TIMER || g_wake_cause == ESP_SLEEP_WAKEUP_EXT0);
+  if (g_woke_from_sleep) {                         // 슬립 중 잡아뒀던 라디오 제어핀을 다시 풀어준다
+    gpio_deep_sleep_hold_dis();
+    for (int pin : kHoldPins) gpio_hold_dis((gpio_num_t)pin);
+  }
+  g_rtc_boots++;
   env_pins_init();                // 센서가 CSB Low를 보기 전에 — 무엇보다 먼저
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);      // 주차 중엔 USB 호스트가 없다 — 로그가 루프를 막으면 안 된다
   delay(300);
   g_boot_cpu_mhz = getCpuFrequencyMhz();
   LOGF("\n==== pager-vehicle %s / XIAO-S3 + Wio-SX1262 / node %s ====\n", FW_VERSION, NODE_ID);
-  LOGF("[BOOT] reset_reason=%d (1=POR 4=PANIC 5=INT_WDT 6=TASK_WDT 7=WDT 9=BROWNOUT 11=USB)\n",
-       (int)esp_reset_reason());
-  LOGF("Serial: S=status  I=i2c scan  J=sensor spi probe  N=nodes  X=RF config  R=last RSSI  B=beacon now  M<text>=send chat\n");
+  LOGF("[BOOT] reset_reason=%d (1=POR 4=PANIC 5=INT_WDT 6=TASK_WDT 7=WDT 9=BROWNOUT 11=USB)  wake=%s  boots=%lu  up=%lus\n",
+       (int)esp_reset_reason(),
+       g_wake_cause == ESP_SLEEP_WAKEUP_TIMER ? "TIMER" : g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? "LORA-DIO1" : "cold",
+       (unsigned long)g_rtc_boots, (unsigned long)uptime_s());
+  LOGF("Serial: S=status  I=i2c scan  N=nodes  X=RF config  R=last RSSI  B=beacon now  Z=deep sleep now  M<text>=send chat\n");
 
 #if VEH_VBUS_SENSE_PIN >= 0
   pinMode(VEH_VBUS_SENSE_PIN, INPUT);
@@ -535,18 +605,31 @@ void setup() {
   env_probe();
   if (!g_env_name) LOGF("[ENV] sensor: NOT FOUND (Serial 'I' = I2C 진단)\n");
 
-  lora_begin();
-  lora_set_callbacks(on_lora_msg, on_lora_conn);
+  lora_set_callbacks(on_lora_msg, on_lora_conn);   // begin() 전에: DIO1 wake 시 깨운 패킷이 begin 안에서 콜백된다
   lora_set_l1_callback(on_lora_l1);
   lora_set_my_id(g_display_id);
+  // 슬립에서 깼으면 SX1262는 설정된 채 살아 있고 버퍼에 우리를 깨운 패킷이 있을 수 있다 → 리셋 없이 재개.
+  // ext0로 깼는데 wake 신호가 아니면(남의 HB 등) 짧게만 깨어 있는다. 타이머면 비콘 창만큼.
+  if (g_woke_from_sleep) stay_awake(g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? VEH_WAKE_SHORT_MS : VEH_WAKE_WINDOW_MS,
+                                    g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? "LoRa wake" : "timer wake");
+  lora_begin(!g_woke_from_sleep);
 
   ble_dash_begin();
 
   // 부팅 직후엔 USB 열거가 아직 안 끝났을 수 있다 → "전원 있음"으로 시작하고 디바운스가
   // 지나서도 호스트가 없으면 그때 주차로 넘어간다.
-  g_power_raw = true;
-  g_power_raw_ms = millis();
-  apply_parked(false, false);
+  if (g_woke_from_sleep && g_rtc_was_parked) {
+    // 잠들기 전에 주차 중이었다 → 주차로 시작. USB가 붙어 있으면 power_tick이 10초 디바운스 뒤
+    // 주행으로 되돌리며, 그동안엔 g_power_raw 때문에 슬립하지 않는다.
+    g_power_raw = false;
+    g_power_raw_ms = millis();
+    apply_parked(true, false);
+    if (g_wake_cause == ESP_SLEEP_WAKEUP_TIMER) schedule_beacon(300);   // 깬 김에 상태 비콘
+  } else {
+    g_power_raw = true;
+    g_power_raw_ms = millis();
+    apply_parked(false, false);
+  }
 }
 
 void loop() {
@@ -558,8 +641,11 @@ void loop() {
   power_tick(now);
   sensor_tick(now);
   beacon_tick(now);
+  sleep_tick(now);
 
+  if (ble_dash_ready()) stay_awake(VEH_BLE_LINGER_MS, "BLE connected");
   if (ble_dash_consume_just_ready()) {
+    stay_awake(VEH_AWAKE_MS, "BLE connected");
     send_everything();
     g_next_status_ms = now + 5000;
   }
@@ -569,8 +655,10 @@ void loop() {
   if (lora_tx_consume_done()) ble_dash_send_line("{\"t\":\"txdone\"}");
   {
     int seq; uint32_t cnt;
-    if (lora_consume_range(&seq, &cnt))
+    if (lora_consume_range(&seq, &cnt)) {
+      stay_awake(VEH_AWAKE_MS, "addressed PING");  // 우리 앞으로 온 PING = 깨우기 신호
       ble_dash_send_line("{\"t\":\"pong\",\"seq\":" + String(seq) + ",\"n\":" + String((unsigned long)cnt) + "}");
+    }
   }
 
   if (lora_nodes_consume_changed()) g_nodes_dirty = true;
@@ -603,12 +691,19 @@ void loop() {
       case 'X': lora_probe_at(); break;
       case 'R': lora_query_rssi(); break;
       case 'B': schedule_beacon(0); Serial.println("[CMD] beacon now"); break;
+      case 'Z':                              // 벤치 테스트: USB 꽂힌 채로 강제 딥슬립 (USB CDC는 끊겼다가 wake 후 재열거)
+        Serial.println("[CMD] forcing deep sleep now"); g_rtc_was_parked = true; go_to_sleep(); break;
       case 'S':
         Serial.printf("[STAT] %s  power_raw=%d  T=%.1fC RH=%.1f%% P=%s ok=%d  vbat=%dmV(%d%%)  nodes=%d  ble=%d  cpu=%luMHz\n",
                       g_parked ? "PARKED" : "DRIVING", (int)g_power_raw, (double)g_env.temp_c,
                       (double)g_env.hum_pct, isnan(g_env.press_hpa) ? "-" : (String(g_env.press_hpa, 1) + "hPa").c_str(), (int)g_env.ok, g_vbat_mv, battery_pct(g_vbat_mv),
                       lora_nodes_count(), (int)ble_dash_ready(), (unsigned long)getCpuFrequencyMhz());
         Serial.printf("[STAT] next beacon: %s\n", build_beacon().c_str());
+        Serial.printf("[STAT] sleep: %s  awake_for=%lds (%s)  boots=%lu  this boot: %s%s\n",
+                      VEH_SLEEP_ENABLE ? (g_parked ? "armed" : "driving — never") : "disabled",
+                      (long)((int32_t)(g_awake_until_ms - millis()) / 1000), g_awake_why, (unsigned long)g_rtc_boots,
+                      g_wake_cause == ESP_SLEEP_WAKEUP_TIMER ? "TIMER wake" : g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? "LoRa-DIO1 wake" : "cold boot",
+                      ls_resumed_note().c_str());
         break;
       default: break;
     }

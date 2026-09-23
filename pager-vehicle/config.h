@@ -56,6 +56,23 @@
 #define VEH_VBAT_CAL        1.000f   // 멀티미터 실측 / 표시값. 저항 오차(±1–5 %) 보정용
 #define VEH_BATT_LOW_PCT    15       // 주차 중 이 이하로 떨어지면 비콘에 'L' 플래그 + 즉시 1발
 
+// ----- 주차 중 딥슬립 -----
+// 주차 후 VEH_AWAKE_MS 동안은 완전히 깨어 있다(폰 연결·채팅·디스커버리 전부). 그 뒤엔:
+//   딥슬립 → VEH_SLEEP_WAKE_S 마다 타이머로 깨서 센서 측정 + !CAR 비콘 + 짧은 BLE 광고 창 → 다시 슬립.
+//   슬립 중에도 SX1262는 RX 듀티사이클로 듣고 있다가 패킷이 오면 DIO1로 ESP32를 깨운다(ext0).
+//   깨우는 신호(30분 다시 깨어 있음): 우리 앞으로 온 PING(<dst>=P01), 채팅 메시지 수신, 폰 BLE 연결.
+//   그 외 프레임(남의 HB/!RB 등)으로 깼으면 VEH_WAKE_SHORT_MS 뒤 다시 잔다.
+// 슬립 중 평균 ~2 mA(듀티사이클 RX 포함) + 3분마다 ~15초 각성 → 1000 mAh로 1주 이상.
+// 대가: 슬립 중엔 폰이 바로 못 붙는다(다음 타이머 창까지 최대 VEH_SLEEP_WAKE_S 대기, 또는 T-Deck에서
+// 주소지정 PING을 쏘면 즉시 30분 각성). 받은 채팅 히스토리(RAM)는 슬립하면 사라진다.
+// 요구: LORA_DIO1_PIN이 RTC GPIO(ESP32-S3: GPIO0~21)여야 한다 — 헤더 경로(GPIO1)는 OK, B2B(39)는 불가.
+#define VEH_SLEEP_ENABLE       1
+#define VEH_SLEEP_WAKE_S       180       // 타이머 wake 주기 = 슬립 중 비콘 주기 (PROTOCOL_CAR: ≥ 60 s)
+#define VEH_AWAKE_MS           1800000UL // 주차 직후 / 깨우는 신호 뒤 각성 시간 (30분)
+#define VEH_WAKE_WINDOW_MS     15000UL   // 타이머 wake 창: 비콘 + BLE 광고 + USB(주행) 재감지 여유
+#define VEH_WAKE_SHORT_MS      25000UL   // 남의 프레임으로 깼을 때: 이어지는 청크/응답을 받을 시간
+#define VEH_BLE_LINGER_MS      60000UL   // 폰이 끊긴 뒤 이만큼은 더 깨어 있는다(재연결 여유)
+
 // ----- 상태 비콘 (!CAR, PROTOCOL_CAR.md) -----
 #define VEH_BEACON_PARKED_MS   300000UL  // 주차 중 5분마다. §8a beacon-class → 스트림에 양보
 #define VEH_BEACON_DRIVING_MS  0UL       // 주행 중엔 끔 (0). HB는 역할과 무관하게 계속 나간다

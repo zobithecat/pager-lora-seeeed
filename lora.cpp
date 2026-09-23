@@ -135,6 +135,7 @@ static uint32_t s_lbt_hold_until = 0;
 static uint8_t  s_lbt_streak     = 0;
 static int      s_begin_status   = -1;   // radio.begin() 결과 (진단용)
 static int      s_last_cad       = 0;    // 마지막 scanChannel() 원시 반환값 (진단용)
+static uint32_t s_resumed_len    = 0;
 
 // ===== Discovery 테이블 / 통계 =====
 static LoraNode  s_nodes[LORA_NODE_MAX];
@@ -149,12 +150,39 @@ void lora_set_callbacks(LoraRxMsgCb on_msg, LoraConnStateCb on_conn) {
   s_cb_conn = on_conn;
 }
 void lora_set_l1_callback(LoraL1Cb on_l1) { s_cb_l1 = on_l1; }
+bool lora_idle() {
+  if (!s_radio_mtx || !s_tx_q) return false;
+  if (s_l1_txq_count > 0 || s_pong_pending) return false;
+  if (uxQueueMessagesWaiting(s_tx_q) > 0) return false;
+  if (xSemaphoreTake(s_radio_mtx, 0) != pdTRUE) return false;   // TX 태스크가 프레임 송신 중
+  xSemaphoreGive(s_radio_mtx);
+  for (auto& f : s_frames) if (f.open) return false;             // 남의 메시지를 받는 중
+  return true;
+}
+
+int lora_dio1_pin() { return LORA_DIO1_PIN; }
+
+bool lora_sleep_arm() {
+  if (!s_radio_mtx) return false;
+  xSemaphoreTake(s_radio_mtx, portMAX_DELAY);
+  s_rx_flag = false;
+  // 프리앰블(8심볼)을 놓치지 않는 최소 청취 창을 RadioLib이 계산한다. SF9/BW125에서 대략
+  // 25 % 듀티 → SX1262 평균 ~1.3 mA. 패킷이 들어오면 RxDone → DIO1 High → ESP32 ext0 wake.
+  int st = radio.startReceiveDutyCycleAuto();
+  if (st != RADIOLIB_ERR_NONE) {
+    LOGF("[LORA] duty-cycle RX failed: %d — plain RX instead\n", st);
+    radio.startReceive();
+  }
+  return st == RADIOLIB_ERR_NONE;                    // 뮤텍스는 일부러 안 돌려준다: 곧 딥슬립
+}
+
 void lora_get_stats(LoraStats* out) {
   if (!out) return;
   *out = s_stats;
   out->last_rssi = s_my_rssi_cached;
   out->last_rssi_valid = s_my_rssi_valid;
   out->radio_status = s_begin_status;
+  out->resumed_len = s_resumed_len;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,10 +333,12 @@ static void radio_hw_reset() {
   delay(5);
 }
 
-void lora_begin() {
+static void radio_read_packet();   // defined below (receive section)
+
+void lora_begin(bool hw_reset) {
   SPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_NSS_PIN);
 
-  radio_hw_reset();
+  if (hw_reset) radio_hw_reset();
   radio.resetOnStartup = false;                      // 위에서 이미 했다 — RadioLib의 레이스를 피한다
   int st = radio.begin(RF_FREQ_MHZ, RF_BW_KHZ, RF_SF, RF_CR_DENOM,
                        RF_SYNC_WORD, LORA_TX_DBM, RF_PREAMBLE, LORA_TCXO_V);
@@ -330,7 +360,20 @@ void lora_begin() {
   radio.setCRC(RF_CRC_ON ? 2 : 0);
 
   radio.setPacketReceivedAction(lora_on_dio1);
-  radio.startReceive();
+  if (!hw_reset) {
+    // 딥슬립 중 DIO1(RxDone)로 깬 경우: begin()은 IRQ만 지우고 수신 버퍼는 남긴다. 버퍼에
+    // 패킷이 있으면 지금 읽는다 — 이 패킷이 우리를 깨운 프레임이다.
+    size_t len = radio.getPacketLength();
+    if (len > 0 && len < 256) {
+      LOGF("[LORA] resume: %u B pending in RX buffer (woke us)\n", (unsigned)len);
+      s_resumed_len = len;
+      radio_read_packet();                           // 처리 후 RX 재무장까지 함
+    } else {
+      radio.startReceive();
+    }
+  } else {
+    radio.startReceive();
+  }
 
   LOGF("[LORA] SF%u BW%lu CR4/%u CRC=%d freq=%.1fMHz pwr=%ddBm LBT=%d → ToA(80B)=%lums\n",
        LORA_SF, (unsigned long)LORA_BW_HZ, LORA_CR + 4, LORA_HAS_CRC,

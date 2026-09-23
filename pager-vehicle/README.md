@@ -50,8 +50,21 @@ BAT+ ──[ R1 200k ]──┬──[ R2 200k ]── GND
 - 잔량 %는 1셀 LiPo OCV 곡선 환산. USB가 꽂혀 있는 동안은 충전 전압이 읽혀 실제보다 높게 나온다
 - 주차 중 15 % 이하(`VEH_BATT_LOW_PCT`)면 비콘 `st`에 `L` 플래그를 세우고 즉시 1발 보낸다
 
-주차 중에도 LoRa는 계속 수신 상태다(discovery·채팅 수신 때문에 deep sleep을 안 쓴다).
-대략 50–70 mA — 1000 mAh LiPo로 하루가 안 된다. 며칠씩 세워둘 거면 큰 셀을 쓸 것.
+### 주차 중 딥슬립 (`VEH_SLEEP_*`)
+
+주차로 전환되면 **30분**(`VEH_AWAKE_MS`)은 완전히 깨어 있는다(폰 연결·채팅·디스커버리 전부). 그 뒤:
+
+- **딥슬립** → `VEH_SLEEP_WAKE_S`(기본 180 s)마다 타이머로 깨서 센서 측정 + `!CAR` 비콘 + 15 s BLE 광고 창 → 다시 슬립
+- 슬립 중에도 SX1262는 **RX 듀티사이클**로 듣고 있다가 패킷이 오면 **DIO1(D0/GPIO1)로 ESP32를 깨운다**(ext0).
+  깬 뒤 칩을 리셋하지 않고 재개하므로 우리를 깨운 패킷 자체를 RX 버퍼에서 읽어 처리한다
+- **깨우는 신호** (다시 30분 각성): 우리 앞으로 온 `PING`(`<dst>=P01`, T-Deck Range 주소지정), 채팅 메시지 수신, 폰 BLE 연결.
+  남의 HB/`!RB`로 깼으면 25 s(`VEH_WAKE_SHORT_MS`) 뒤 다시 잔다
+- 폰이 붙어 있는 동안은 절대 안 자고, 끊긴 뒤 1분은 더 깨어 있는다. USB가 보이면(주행) 슬립 자체가 없다
+- 대가: 슬립 중엔 Bluefy가 바로 못 붙는다 — 다음 타이머 창(최대 3분)까지 기다리거나, T-Deck에서 주소지정 PING을 쏘면 즉시 깨어난다.
+  받은 채팅 히스토리(RAM)는 슬립하면 사라진다(깨우는 신호가 오면 30분 동안은 보존됨)
+- 슬립 중 평균 ~2 mA(듀티사이클 RX 포함) + 3분마다 ~15 s 각성 → 1000 mAh로 **1주 이상**(실측 전 추정). `VEH_SLEEP_ENABLE 0`이면 예전처럼 상시 각성(~40 mA, 약 20시간)
+- 벤치 테스트: Serial `Z` = USB 꽂힌 채 강제 딥슬립(CDC가 끊겼다가 wake 후 재열거). `S`에 wake 원인과 "깨운 프레임 N B" 표시
+- 요구: `LORA_DIO1_PIN`이 RTC GPIO(GPIO0~21)여야 ext0 wake가 된다 — 헤더 경로(GPIO1) OK, B2B 경로(39)는 타이머 wake만
 
 ## 빌드
 
@@ -63,7 +76,7 @@ USB CDC On Boot `Enabled`. USB Mode는 둘 다 지원한다(기본 USB-OTG/TinyU
 arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi pager-vehicle
 ```
 
-Serial(115200): `S` 상태 · `I` I2C 진단 · `N` 노드 테이블+dedup 통계 · `X` RF 설정 · `R` 마지막 RSSI · `B` 비콘 즉시 · `M<text>⏎` 채팅 송신
+Serial(115200): `S` 상태(슬립/wake 포함) · `Z` 강제 딥슬립 · `I` I2C 진단 · `N` 노드 테이블+dedup 통계 · `X` RF 설정 · `R` 마지막 RSSI · `B` 비콘 즉시 · `M<text>⏎` 채팅 송신
 
 ## 대시보드 (Bluefy)
 
