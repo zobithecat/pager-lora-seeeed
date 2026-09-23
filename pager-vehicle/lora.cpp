@@ -136,6 +136,7 @@ static uint8_t  s_lbt_streak     = 0;
 static int      s_begin_status   = -1;   // radio.begin() 결과 (진단용)
 static int      s_last_cad       = 0;    // 마지막 scanChannel() 원시 반환값 (진단용)
 static uint32_t s_resumed_len    = 0;
+static bool     s_hb_enabled     = true;
 
 // ===== Discovery 테이블 / 통계 =====
 static LoraNode  s_nodes[LORA_NODE_MAX];
@@ -159,6 +160,8 @@ bool lora_idle() {
   for (auto& f : s_frames) if (f.open) return false;             // 남의 메시지를 받는 중
   return true;
 }
+
+void lora_set_hb_enabled(bool on) { s_hb_enabled = on; }
 
 int lora_dio1_pin() { return LORA_DIO1_PIN; }
 
@@ -886,7 +889,7 @@ void lora_tick() {
       s_l1_txq_count--;
       sent = true;
     }
-  } else if ((int32_t)(now - s_next_hb_ms) >= 0) {
+  } else if (s_hb_enabled && (int32_t)(now - s_next_hb_ms) >= 0) {
     bool overdue_full_period = (int32_t)(now - s_next_hb_ms) >= (int32_t)LORA_HB_TX_MS;
     if ((!reserved || overdue_full_period) && lbt_clear()) {
       String hb = "HB";

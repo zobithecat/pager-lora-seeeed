@@ -31,10 +31,12 @@ RTC_DATA_ATTR static uint32_t g_rtc_boots        = 0;
 RTC_DATA_ATTR static time_t   g_rtc_first_boot   = 0;    // RTC 시계는 딥슬립 중에도 간다 → 가동시간 기준
 RTC_DATA_ATTR static uint32_t g_rtc_beacon_count = 0;
 RTC_DATA_ATTR static bool     g_rtc_was_parked   = false;
+RTC_DATA_ATTR static time_t   g_rtc_next_bcn     = 0;    // 주차 중 다음 !CAR 예정 (RTC 벽시계). 어떤 이유로 깼든 지났으면 보낸다
 static esp_sleep_wakeup_cause_t g_wake_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
 static bool     g_woke_from_sleep = false;
 static uint32_t g_awake_until_ms  = 0;       // 주차 중 이 시각이 지나면 딥슬립
 static const char* g_awake_why    = "";
+static uint32_t g_full_until_ms   = 0;       // "온전히 깨어 있음"(HB·광고 정상) 끝나는 시각. 짧은 wake 창은 여기 안 들어간다
 
 // 전원/주차 상태
 static bool     g_parked        = false;
@@ -108,9 +110,12 @@ static uint32_t uptime_s() {
 }
 
 // 깨어 있기: 지금부터 최소 ms 동안은 슬립하지 않는다 (더 긴 예약이 있으면 그대로).
-static void stay_awake(uint32_t ms, const char* why) {
+// full=true: 폰 연결·채팅·주소지정 PING·주차 직후처럼 "사람이 이 노드를 찾는" 각성 → HB 정상.
+// full=false: 타이머 비콘 창 / 남의 프레임으로 깬 짧은 창 → HB 끔.
+static void stay_awake(uint32_t ms, const char* why, bool full = true) {
   uint32_t until = millis() + ms;
   if ((int32_t)(until - g_awake_until_ms) > 0) { g_awake_until_ms = until; g_awake_why = why; }
+  if (full && (int32_t)(until - g_full_until_ms) > 0) g_full_until_ms = until;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +278,7 @@ static void beacon_tick(uint32_t now) {
   // beacon-class (§8a): 스트림에 양보하되 자기 주기 1회를 넘기진 않는다. 주기가 없는
   // 단발(상태 전환/수동)은 60초를 상한으로 둔다.
   if (lora_send_l1(line, VEH_BEACON_TTL, period ? period : 60000UL)) {
+    if (g_parked) g_rtc_next_bcn = time(nullptr) + VEH_SLEEP_WAKE_S;   // 슬립 중 비콘 일정의 기준
     g_last_beacon = line;
     g_beacon_count++;
     ble_dash_send_line("{\"t\":\"bcn\",\"line\":\"" + json_escape(line) + "\",\"n\":" +
@@ -545,14 +551,17 @@ static void spi_probe() {
 static const int kHoldPins[] = { LORA_RST_PIN, LORA_NSS_PIN, LORA_RXEN_PIN };   // 슬립 중 라디오가 RX를 유지하려면 HIGH로 잡혀 있어야
 
 static void go_to_sleep() {
-  LOGF("[SLEEP] deep sleep: wake in %us or on LoRa DIO1 (GPIO%d). up=%lus boots=%lu\n",
-       VEH_SLEEP_WAKE_S, lora_dio1_pin(), (unsigned long)uptime_s(), (unsigned long)g_rtc_boots);
+  LOGF("[SLEEP] deep sleep: next beacon in %lds, or on LoRa DIO1 (GPIO%d). up=%lus boots=%lu\n",
+       (long)(g_rtc_next_bcn - time(nullptr)), lora_dio1_pin(), (unsigned long)uptime_s(), (unsigned long)g_rtc_boots);
   Serial.flush();
   ble_dash_end();
   lora_sleep_arm();                                // 라디오: 듀티사이클 RX, DIO1 = RxDone
   for (int pin : kHoldPins) gpio_hold_en((gpio_num_t)pin);
   gpio_deep_sleep_hold_en();
-  esp_sleep_enable_timer_wakeup((uint64_t)VEH_SLEEP_WAKE_S * 1000000ULL);
+  // 타이머는 "다음 비콘까지 남은 시간". LoRa로 자주 깨도 비콘 일정은 밀리지 않는다.
+  long remain = (long)(g_rtc_next_bcn - time(nullptr));
+  if (remain < 5 || remain > VEH_SLEEP_WAKE_S) remain = VEH_SLEEP_WAKE_S;
+  esp_sleep_enable_timer_wakeup((uint64_t)remain * 1000000ULL);
   if (lora_dio1_pin() <= 21) esp_sleep_enable_ext0_wakeup((gpio_num_t)lora_dio1_pin(), 1);
   g_rtc_was_parked = true;
   esp_deep_sleep_start();
@@ -610,8 +619,11 @@ void setup() {
   lora_set_my_id(g_display_id);
   // 슬립에서 깼으면 SX1262는 설정된 채 살아 있고 버퍼에 우리를 깨운 패킷이 있을 수 있다 → 리셋 없이 재개.
   // ext0로 깼는데 wake 신호가 아니면(남의 HB 등) 짧게만 깨어 있는다. 타이머면 비콘 창만큼.
-  if (g_woke_from_sleep) stay_awake(g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? VEH_WAKE_SHORT_MS : VEH_WAKE_WINDOW_MS,
-                                    g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? "LoRa wake" : "timer wake");
+  if (g_woke_from_sleep) {
+    lora_set_hb_enabled(false);                    // 짧은 창에선 HB 안 낸다 — loop()가 full 각성이 되면 다시 켠다
+    stay_awake(g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? VEH_WAKE_SHORT_MS : VEH_WAKE_WINDOW_MS,
+               g_wake_cause == ESP_SLEEP_WAKEUP_EXT0 ? "LoRa wake" : "timer wake", false);
+  }
   lora_begin(!g_woke_from_sleep);
 
   ble_dash_begin();
@@ -624,7 +636,11 @@ void setup() {
     g_power_raw = false;
     g_power_raw_ms = millis();
     apply_parked(true, false);
-    if (g_wake_cause == ESP_SLEEP_WAKEUP_TIMER) schedule_beacon(300);   // 깬 김에 상태 비콘
+    // 어떤 이유로 깼든 비콘 예정 시각이 지났으면 보낸다 (남의 프레임으로 깬 김에라도).
+    if (g_rtc_next_bcn == 0 || time(nullptr) >= g_rtc_next_bcn) {
+      schedule_beacon(300);
+      if (g_wake_cause == ESP_SLEEP_WAKEUP_EXT0) stay_awake(VEH_WAKE_WINDOW_MS, "beacon due", false);
+    }
   } else {
     g_power_raw = true;
     g_power_raw_ms = millis();
@@ -641,6 +657,7 @@ void loop() {
   power_tick(now);
   sensor_tick(now);
   beacon_tick(now);
+  lora_set_hb_enabled(!g_parked || !VEH_SLEEP_ENABLE || !g_woke_from_sleep || (int32_t)(now - g_full_until_ms) < 0);
   sleep_tick(now);
 
   if (ble_dash_ready()) stay_awake(VEH_BLE_LINGER_MS, "BLE connected");

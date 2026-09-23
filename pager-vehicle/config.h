@@ -74,7 +74,7 @@
 #define VEH_AWAKE_MS           1800000UL // 주차 직후 / 깨우는 신호 뒤 각성 시간 (30분)
 #endif
 #define VEH_WAKE_WINDOW_MS     15000UL   // 타이머 wake 창: 비콘 + BLE 광고 + USB(주행) 재감지 여유
-#define VEH_WAKE_SHORT_MS      25000UL   // 남의 프레임으로 깼을 때: 이어지는 청크/응답을 받을 시간
+#define VEH_WAKE_SHORT_MS      3000UL    // 남의 프레임으로 깼을 때: 처리 후 바로 재슬립 (L2 프레임 중이면 lora_idle()이 EOF까지 붙잡는다)
 #define VEH_BLE_LINGER_MS      60000UL   // 폰이 끊긴 뒤 이만큼은 더 깨어 있는다(재연결 여유)
 
 // ----- 상태 비콘 (!CAR, PROTOCOL_CAR.md) -----

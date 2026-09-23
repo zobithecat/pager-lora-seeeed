@@ -85,6 +85,9 @@ void lora_get_stats(LoraStats* out);
 // ===== 딥슬립 협조 =====
 // 송신할 게 하나도 없고(L1 큐·PONG·L2 큐·진행 중 프레임) 라디오가 한가하면 true.
 bool lora_idle();
+// HB 송신 on/off. 딥슬립 노드가 비콘 창/남의 프레임으로 잠깐 깼을 때 매번 HB를 내면 채널만 먹고
+// 이웃 테이블엔 아무 정보도 안 준다 → 잠깐 깬 동안엔 끈다 (존재 확인은 !CAR가 맡는다).
+void lora_set_hb_enabled(bool on);
 // 라디오를 RX 듀티사이클(프리앰블 감지 창만 주기적으로 여는 저전력 수신)로 두고 라디오 뮤텍스를
 // 잡은 채 반환한다 — 호출 직후 esp_deep_sleep_start() 할 것. 패킷이 오면 DIO1이 High가 되므로
 // LORA_DIO1_PIN을 ext0 wake 소스로 쓴다 (RTC GPIO여야 함). 실패 시 false(라디오는 일반 RX).
