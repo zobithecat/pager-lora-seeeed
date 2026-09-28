@@ -120,7 +120,8 @@
 // PROTOCOL §2 regulatory: 이 노드는 실외·무인으로 돈다 → legal profile.
 //   EIRP ≤ 14 dBm (안테나 이득 포함 — 이득 큰 안테나를 달면 더 내릴 것), 모든 TX 전에 LBT.
 //   주파수는 플릿과 들리려면 lora_rf.h(922.0)를 따를 수밖에 없다 — README 참고.
-#define LORA_TX_DBM           14
+#define LORA_TX_DBM           22     // 2026-09-28 사용자 요청으로 22 dBm(experiment profile). 14 dBm에선 링크가 약했다.
+                                     // ★ KR920 end-device EIRP 한도(14 dBm) 초과 — 실외·상시 운용이면 규정 위반 소지 (PROTOCOL §2)
 #define LORA_LBT              1
 #define LORA_PONG_BROADCAST   0      // v1.21: 페이저는 주소지정 PING(<dst>=P01)에만 답한다
 

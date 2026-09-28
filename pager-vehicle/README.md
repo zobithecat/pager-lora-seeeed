@@ -108,8 +108,8 @@ passkey 본딩을 요구한다. 기본은 0(열림) — 주차된 차 근처의 
 
 ## 무선 규정 메모 (PROTOCOL §2)
 
-실외·무인 노드라서 legal profile을 따른다: **14 dBm**(`LORA_TX_DBM`, 안테나 이득 포함 EIRP 기준 —
-고이득 안테나면 더 내릴 것) + **모든 송신 전 LBT**(CAD, non-persistent 백오프).
+현재 **22 dBm**(`LORA_TX_DBM`, 2026-09-28 사용자 요청 — 14 dBm에선 링크가 약했다) + **모든 송신 전 LBT**(CAD, non-persistent 백오프).
+22 dBm은 KR920 end-device EIRP 한도(14 dBm, 안테나 이득 포함)를 넘는 experiment profile이다. 실외·상시 운용 시엔 14로 되돌리는 게 규정에 맞다.
 주파수는 플릿과 들리려면 `lora_rf.h`의 922.0 MHz를 따를 수밖에 없다. 스펙의 legal 채널은
 922.1 MHz이므로, 플릿 전체를 옮기는 flag day 전까지는 이 점이 남는 숙제다.
 
