@@ -45,6 +45,11 @@
 //   100k/100k로 분압해 GPIO에 넣고 VEH_VBUS_SENSE_PIN에 그 핀 번호를 주면 된다.
 #define VEH_VBUS_SENSE_PIN  (-1)     // -1 = 미사용 (USB 호스트 감지만)
 #define VEH_POWER_DEBOUNCE_MS 10000UL // 시동 크랭킹 중 순간 끊김에 흔들리지 않게
+// USB 데이터 연결이 없어도(충전 전용 케이블·시거잭 충전기) 배터리 전압의 계단/추세로 외부 전원을 추정한다.
+//   계단 ≥ +STEP → 주행, ≤ −STEP → 주차 (6 s 평균 vs 직전 6 s).  5분 추세 ±TREND도 같은 방향으로 판정.
+//   2026-09-28 실측: 맥 USB 분리 순간 −26 mV, 잡음 ±2 mV. 배터리 분압(D5) 배선이 있어야 동작.
+#define VEH_PWR_STEP_MV     14.0f
+#define VEH_PWR_TREND_MV    20.0f
 // 배터리 전압: XIAO ESP32S3는 BAT가 ADC에 안 물려 있어서 분압 배선이 있어야 읽힌다.
 //     BAT+ ──[R1 2.3M]──┬──[R2 2.3M]── GND
 //                       └──┬── D5 (GPIO6, ADC1_CH5)   (상시 소모 ~1 µA)

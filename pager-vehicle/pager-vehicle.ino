@@ -31,6 +31,7 @@ RTC_DATA_ATTR static uint32_t g_rtc_boots        = 0;
 RTC_DATA_ATTR static time_t   g_rtc_first_boot   = 0;    // RTC 시계는 딥슬립 중에도 간다 → 가동시간 기준
 RTC_DATA_ATTR static uint32_t g_rtc_beacon_count = 0;
 RTC_DATA_ATTR static bool     g_rtc_was_parked   = false;
+RTC_DATA_ATTR static float    g_rtc_node_mv      = 0;    // 잠들기 직전 배터리 분압 노드 전압 — 깨서 비교(충전기 꽂혔나)
 RTC_DATA_ATTR static time_t   g_rtc_next_bcn     = 0;    // 주차 중 다음 !CAR 예정 (RTC 벽시계). 어떤 이유로 깼든 지났으면 보낸다
 static esp_sleep_wakeup_cause_t g_wake_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
 static bool     g_woke_from_sleep = false;
@@ -147,6 +148,37 @@ static void read_vbat() {
 #endif
 }
 
+// ---- 전원 판별 실험 도구 (Serial V / L) ----
+// D5 노드 원시 전압(mV, 보정 적용, 분압 전). 고임피던스라 샘플 사이 간격을 둔다.
+static float node_raw_mv(int n = 32) {
+#if VEH_VBAT_ADC_PIN >= 0
+  uint32_t acc = 0;
+  for (int i = 0; i < n; i++) { acc += analogReadMilliVolts(VEH_VBAT_ADC_PIN); delayMicroseconds(300); }
+  return (float)acc / n * VEH_VBAT_CAL;
+#else
+  return -1;
+#endif
+}
+static bool g_vstream = false;
+static uint32_t g_vstream_next = 0;
+// 기록 모드(E): USB를 뽑으면 시리얼이 끊기니 RAM에 쌓았다가 다시 꽂으면 D로 받는다.
+static bool     g_elog = false;
+static String   g_elog_buf;
+static uint32_t g_elog_next = 0;
+static void elog(const String& s) {
+  if (g_elog_buf.length() > 24000) return;
+  g_elog_buf += s; g_elog_buf += '\n';
+}
+static bool usb_host_now() {
+#if ARDUINO_USB_MODE
+  return HWCDC::isPlugged();
+#else
+  return tud_mounted() && !tud_suspended();
+#endif
+}
+
+// 부하 시험: 기준 전압 → Wi-Fi 수동 스캔(수신 ~80–100 mA 추가)을 켜고 0.6 s 기다린 뒤(RC τ≈0.12 s) 전압 →
+// 스캔 종료 후 회복 전압. USB 전원이 있으면 추가 전류를 VBUS가 대서 배터리가 거의 안 처진다.
 // 1셀 LiPo 개방전압 → 잔량 %. 부하가 가벼워서(수십 mA) OCV 곡선을 그대로 쓴다.
 // USB로 충전 중일 땐 충전 전압이 읽혀 실제보다 높게 나온다 — 대시보드가 "충전 중"으로 구분.
 static int battery_pct(int mv) {
@@ -170,6 +202,7 @@ static void apply_parked(bool parked, bool announce) {
   g_parked = parked;
   LOGF("[PWR] %s\n", parked ? "PARKED — on LiPo, status beacon on" : "DRIVING — vehicle power present");
   setCpuFrequencyMhz(parked ? VEH_PARKED_CPU_MHZ : g_boot_cpu_mhz);
+  ps_rebaseline(millis(), 15000);                  // 클럭·광고 변경으로 부하가 바뀐다 — 그 계단은 전원 변화가 아니다
   ble_dash_set_slow_adv(parked);
   // 상태가 바뀌면 한 발 쏜다: 주차 시작도, "차가 출발했다"도 지켜보는 쪽엔 뉴스다.
   // 그 뒤로는 주기 설정(주행 0 = 끔)을 따른다.
@@ -179,8 +212,70 @@ static void apply_parked(bool parked, bool announce) {
   g_next_status_ms = 0;
 }
 
+// ---- 배터리 전압으로 USB 전원 유무 추정 (충전 전용 케이블 / 시거잭 충전기 대응) ----
+// 충전기에 꽂히면 충전 전류 × 내부저항만큼 단자 전압이 계단처럼 오르고 이후 계속 오르거나(충전)
+// 만충이면 평평하다. 뽑히면 반대로 떨어지고 부하 때문에 계속 내려간다. 2026-09-28 실측: 맥 USB를
+// 뽑는 순간 배터리 −26 mV, 잡음 ±2 mV. → 계단 ±VEH_PWR_STEP_MV, 추세 5분 ±VEH_PWR_TREND_MV.
+//   falling → 주차,  rising (그리고 평평하면 유지) → 주행.  USB 데이터 연결(호스트)은 그대로 즉시 주행.
+// 우리 LoRa 송신(22 dBm ~120 mA)이 배터리를 순간 처지게 하므로 송신 직후 샘플은 버린다.
+static bool     g_batt_power = false;       // 배터리 추정: 외부 전원 있음
+static float    g_ps_ring[8];               // 2 s 간격 노드 샘플
+static uint8_t  g_ps_n = 0;
+static float    g_ps_trend[6];              // 60 s 간격 평균 (5분 창)
+static uint8_t  g_ps_tn = 0;
+static uint32_t g_ps_next = 0, g_ps_next_trend = 0, g_ps_last_tx = 0, g_ps_quiet_until = 0;
+static float    g_ps_last_node = 0;
+
+static void ps_rebaseline(uint32_t now, uint32_t quiet_ms) {
+  g_ps_n = 0; g_ps_tn = 0;
+  g_ps_quiet_until = now + quiet_ms;         // 모드 전환 직후(CPU 클럭·BLE 광고 변경) 부하 변화는 무시
+}
+
+static void ps_decide(bool power, const char* why, float delta_mv) {
+  if (power == g_batt_power) return;
+  g_batt_power = power;
+  LOGF("[PWR] battery says %s (%s, %+.0f mV)\n", power ? "EXTERNAL POWER" : "on battery", why, delta_mv);
+  if (g_elog) elog(String("PWR ") + (power ? "ext " : "batt ") + why + " " + String(delta_mv, 0));
+}
+
+static void power_sense_tick(uint32_t now) {
+#if VEH_VBAT_ADC_PIN >= 0
+  if ((int32_t)(now - g_ps_next) < 0) return;
+  g_ps_next = now + 2000;
+  LoraStats ls; lora_get_stats(&ls);
+  if (ls.tx_frames != g_ps_last_tx) { g_ps_last_tx = ls.tx_frames; g_ps_next = now + 1500; return; }  // 방금 송신 → 처짐 회복 대기
+  if ((int32_t)(now - g_ps_quiet_until) < 0) return;
+  float v = node_raw_mv(32);
+  if (v < 1250 || v > 2250) { g_ps_n = 0; return; }     // 배터리 배선 없음/범위 밖
+  g_ps_last_node = v;
+  // 계단: 최근 3샘플(6 s) 평균 vs 그 전 3샘플 평균
+  if (g_ps_n < 8) g_ps_ring[g_ps_n++] = v;
+  else { memmove(g_ps_ring, g_ps_ring + 1, sizeof(float) * 7); g_ps_ring[7] = v; }
+  if (g_ps_n >= 6) {
+    float a = (g_ps_ring[g_ps_n - 6] + g_ps_ring[g_ps_n - 5] + g_ps_ring[g_ps_n - 4]) / 3;
+    float b = (g_ps_ring[g_ps_n - 3] + g_ps_ring[g_ps_n - 2] + g_ps_ring[g_ps_n - 1]) / 3;
+    float d = (b - a) * VEH_VBAT_DIVIDER;                 // 배터리 기준 mV
+    if (d >= VEH_PWR_STEP_MV)       { ps_decide(true,  "step up", d);   ps_rebaseline(now, 0); return; }
+    if (d <= -VEH_PWR_STEP_MV)      { ps_decide(false, "step down", d); ps_rebaseline(now, 0); return; }
+  }
+  // 추세: 60 s 평균을 5분 모아 처음과 끝 비교
+  if ((int32_t)(now - g_ps_next_trend) >= 0 && g_ps_n >= 3) {
+    g_ps_next_trend = now + 60000;
+    float m = (g_ps_ring[g_ps_n - 1] + g_ps_ring[g_ps_n - 2] + g_ps_ring[g_ps_n - 3]) / 3;
+    if (g_ps_tn < 6) g_ps_trend[g_ps_tn++] = m;
+    else { memmove(g_ps_trend, g_ps_trend + 1, sizeof(float) * 5); g_ps_trend[5] = m; }
+    if (g_ps_tn == 6) {
+      float d = (g_ps_trend[5] - g_ps_trend[0]) * VEH_VBAT_DIVIDER;
+      if (d >= VEH_PWR_TREND_MV)  ps_decide(true,  "rising 5 min", d);
+      if (d <= -VEH_PWR_TREND_MV) ps_decide(false, "falling 5 min", d);
+    }
+  }
+#endif
+}
+
 static void power_tick(uint32_t now) {
-  bool raw = vehicle_power_present();
+  power_sense_tick(now);
+  bool raw = vehicle_power_present() || g_batt_power;
   if (raw != g_power_raw) { g_power_raw = raw; g_power_raw_ms = now; }
   bool want_parked = !g_power_raw;
   if (want_parked != g_parked && (uint32_t)(now - g_power_raw_ms) >= VEH_POWER_DEBOUNCE_MS)
@@ -554,6 +649,7 @@ static void go_to_sleep() {
   LOGF("[SLEEP] deep sleep: next beacon in %lds, or on LoRa DIO1 (GPIO%d). up=%lus boots=%lu\n",
        (long)(g_rtc_next_bcn - time(nullptr)), lora_dio1_pin(), (unsigned long)uptime_s(), (unsigned long)g_rtc_boots);
   Serial.flush();
+  if (g_ps_last_node > 0) g_rtc_node_mv = g_ps_last_node;
   ble_dash_end();
   lora_sleep_arm();                                // 라디오: 듀티사이클 RX, DIO1 = RxDone
   for (int pin : kHoldPins) gpio_hold_en((gpio_num_t)pin);
@@ -636,6 +732,15 @@ void setup() {
     g_power_raw = false;
     g_power_raw_ms = millis();
     apply_parked(true, false);
+#if VEH_VBAT_ADC_PIN >= 0
+    // 자는 동안 충전기에 꽂혔나: 잠들기 전보다 계단 이상 올랐으면 외부 전원 → 주행(깨어 있음).
+    // 자는 중 부하는 ~2 mA라 배터리 단독이면 거의 그대로거나 조금 내려간다.
+    if (g_rtc_node_mv > 0) {
+      float v = node_raw_mv(64);
+      float d = (v - g_rtc_node_mv) * VEH_VBAT_DIVIDER;
+      if (d >= VEH_PWR_STEP_MV) ps_decide(true, "rose while asleep", d);
+    }
+#endif
     // 어떤 이유로 깼든 비콘 예정 시각이 지났으면 보낸다 (남의 프레임으로 깬 김에라도).
     if (g_rtc_next_bcn == 0 || time(nullptr) >= g_rtc_next_bcn) {
       schedule_beacon(300);
@@ -653,6 +758,15 @@ void loop() {
 
   lora_tick();
   ble_dash_tick();
+  if (g_elog && (int32_t)(now - g_elog_next) >= 0) {
+    g_elog_next = now + 2000;
+    String l = String("V ") + String((unsigned long)(now / 1000)) + " " + String(node_raw_mv(), 1) + " host=" + String((int)usb_host_now());
+    elog(l);
+  }
+  if (g_vstream && (int32_t)(now - g_vstream_next) >= 0) {
+    g_vstream_next = now + 1000;
+    Serial.printf("[VB] %lu %.1f\n", (unsigned long)(now / 1000), node_raw_mv());
+  }
 
   power_tick(now);
   sensor_tick(now);
@@ -703,6 +817,18 @@ void loop() {
     switch (c) {
       case 'M': g_serial_msg_mode = true; g_serial_line = ""; break;
       case 'I': i2c_scan(); break;
+      case 'W': Serial.printf("[PWR] batt_power=%d host=%d parked=%d node=%.1f n=%u tn=%u\n", (int)g_batt_power,
+                              (int)usb_host_now(), (int)g_parked, g_ps_last_node, g_ps_n, g_ps_tn); break;
+      case 'V': g_vstream = !g_vstream; Serial.printf("[VB] stream %s\n", g_vstream ? "on" : "off"); break;
+      case 'E': g_elog = !g_elog; g_elog_buf = ""; g_elog_next = millis();
+                Serial.printf("[ELOG] %s\n", g_elog ? "on — unplug/replug now, then D" : "off"); break;
+      case 'D': {                            // 조금씩 나눠 보낸다 — TX 타임아웃 0이라 한 번에 크게 쓰면 버려진다
+        Serial.setTxTimeoutMs(200);
+        Serial.print("[ELOG-DUMP]\n");
+        for (size_t i = 0; i < g_elog_buf.length(); i += 128) { Serial.print(g_elog_buf.substring(i, i + 128)); Serial.flush(); delay(15); }
+        Serial.print("[ELOG-END]\n"); Serial.flush();
+        Serial.setTxTimeoutMs(0);
+        break; }
       case 'J': spi_probe(); break;
       case 'N': lora_dump_neighbors(); break;
       case 'X': lora_probe_at(); break;
