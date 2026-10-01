@@ -225,15 +225,16 @@ static float    g_ps_trend[6];              // 60 s 간격 평균 (5분 창)
 static uint8_t  g_ps_tn = 0;
 static uint32_t g_ps_next = 0, g_ps_next_trend = 0, g_ps_last_tx = 0, g_ps_quiet_until = 0;
 static float    g_ps_last_node = 0;
+static float    g_ps_peak = 0;              // 외부 전원 판정 중 3샘플 평균 최고치 (0 = 아직 없음)
 
 static void ps_rebaseline(uint32_t now, uint32_t quiet_ms) {
-  g_ps_n = 0; g_ps_tn = 0;
+  g_ps_n = 0; g_ps_tn = 0; g_ps_peak = 0;   // 부하가 바뀌었으니 최고치도 새로 잡는다
   g_ps_quiet_until = now + quiet_ms;         // 모드 전환 직후(CPU 클럭·BLE 광고 변경) 부하 변화는 무시
 }
 
 static void ps_decide(bool power, const char* why, float delta_mv) {
   if (power == g_batt_power) return;
-  g_batt_power = power;
+  g_batt_power = power; g_ps_peak = 0;
   LOGF("[PWR] battery says %s (%s, %+.0f mV)\n", power ? "EXTERNAL POWER" : "on battery", why, delta_mv);
   if (g_elog) elog(String("PWR ") + (power ? "ext " : "batt ") + why + " " + String(delta_mv, 0));
 }
@@ -257,6 +258,16 @@ static void power_sense_tick(uint32_t now) {
     float d = (b - a) * VEH_VBAT_DIVIDER;                 // 배터리 기준 mV
     if (d >= VEH_PWR_STEP_MV)       { ps_decide(true,  "step up", d);   ps_rebaseline(now, 0); return; }
     if (d <= -VEH_PWR_STEP_MV)      { ps_decide(false, "step down", d); ps_rebaseline(now, 0); return; }
+  }
+  // 처짐: 외부 전원이라고 본 뒤로 최고치보다 VEH_PWR_SAG_MV 이상 내려가면 배터리로 돌린다.
+  // 충전 중엔 단자 전압이 오르거나(CC) 평평하다(CV) — 내려가는 건 배터리로 버티고 있다는 뜻.
+  // 계단을 놓친 뽑힘(만충 근처라 충전 전류 ≈ 0)이 주행으로 굳어 밤새 방전되던 것을 막는다 (2026-09-29).
+  // 만충 후 충전 종료 시 이완(4.2 → 4.15 V)은 VEH_PWR_SAG_FULL_MV 위라서 무시.
+  if (g_batt_power && g_ps_n >= 3) {
+    float m = (g_ps_ring[g_ps_n - 1] + g_ps_ring[g_ps_n - 2] + g_ps_ring[g_ps_n - 3]) / 3;
+    if (m > g_ps_peak) g_ps_peak = m;
+    float d = (m - g_ps_peak) * VEH_VBAT_DIVIDER;
+    if (d <= -VEH_PWR_SAG_MV && m * VEH_VBAT_DIVIDER < VEH_PWR_SAG_FULL_MV) { ps_decide(false, "sagging", d); return; }
   }
   // 추세: 60 s 평균을 5분 모아 처음과 끝 비교
   if ((int32_t)(now - g_ps_next_trend) >= 0 && g_ps_n >= 3) {
@@ -817,7 +828,7 @@ void loop() {
     switch (c) {
       case 'M': g_serial_msg_mode = true; g_serial_line = ""; break;
       case 'I': i2c_scan(); break;
-      case 'W': Serial.printf("[PWR] batt_power=%d host=%d parked=%d node=%.1f n=%u tn=%u\n", (int)g_batt_power,
+      case 'W': Serial.printf("[PWR] batt_power=%d peak=%.1f host=%d parked=%d node=%.1f n=%u tn=%u\n", (int)g_batt_power, g_ps_peak,
                               (int)usb_host_now(), (int)g_parked, g_ps_last_node, g_ps_n, g_ps_tn); break;
       case 'V': g_vstream = !g_vstream; Serial.printf("[VB] stream %s\n", g_vstream ? "on" : "off"); break;
       case 'E': g_elog = !g_elog; g_elog_buf = ""; g_elog_next = millis();

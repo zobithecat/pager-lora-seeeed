@@ -50,6 +50,10 @@
 //   2026-09-28 실측: 맥 USB 분리 순간 −26 mV, 잡음 ±2 mV. 배터리 분압(D5) 배선이 있어야 동작.
 #define VEH_PWR_STEP_MV     14.0f
 #define VEH_PWR_TREND_MV    20.0f
+//   외부 전원 판정 후 최고치보다 SAG 이상 처지면 배터리로 복귀 (깨어 있는 방전 ~30 mV/h → 최악 ~1 h).
+//   만충 부근(≥ SAG_FULL)은 충전 종료 후 이완과 구분이 안 돼서 제외.
+#define VEH_PWR_SAG_MV      20.0f
+#define VEH_PWR_SAG_FULL_MV 4100.0f
 // 배터리 전압: XIAO ESP32S3는 BAT가 ADC에 안 물려 있어서 분압 배선이 있어야 읽힌다.
 //     BAT+ ──[R1 2.3M]──┬──[R2 2.3M]── GND
 //                       └──┬── D5 (GPIO6, ADC1_CH5)   (상시 소모 ~1 µA)
