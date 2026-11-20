@@ -351,6 +351,12 @@ void lora_begin(bool hw_reset) {
   } else {
     LOGF("[LORA] SX1262 begin OK\n");
   }
+  // RadioLib begin()은 PA 과전류 한도(OCP)를 60 mA로 건다 → 14 dBm 이상은 ~13 dBm에서 포화.
+  // 140 mA = 칩 리셋 기본값(0x08E7=0x38), +22 dBm PA 설정이 요구하는 값. setOutputPower()는
+  // OCP를 보존하므로 begin() 뒤 한 번이면 된다 — begin()을 부르는 모든 경로(딥슬립 복귀 포함)가
+  // 여기를 지난다. 2026-11-20 이전 이 노드의 거리·링크 기록은 실제 ~13 dBm 기준이다.
+  int ocp = radio.setCurrentLimit(140.0);
+  if (ocp != RADIOLIB_ERR_NONE) LOGF("[LORA] setCurrentLimit(140) FAILED: %d\n", ocp);
 
   // Wio-SX1262: 안테나 스위치는 SX1262 내부 DIO2가 제어. CRC는 lora_rf.h를 따른다 —
   // explicit header가 CRC-present 비트를 싣기 때문에 노드별로 켜도 flag day가 아니다.
@@ -378,9 +384,9 @@ void lora_begin(bool hw_reset) {
     radio.startReceive();
   }
 
-  LOGF("[LORA] SF%u BW%lu CR4/%u CRC=%d freq=%.1fMHz pwr=%ddBm LBT=%d → ToA(80B)=%lums\n",
+  LOGF("[LORA] SF%u BW%lu CR4/%u CRC=%d freq=%.1fMHz pwr=%ddBm ocp=%.0fmA LBT=%d → ToA(80B)=%lums\n",
        LORA_SF, (unsigned long)LORA_BW_HZ, LORA_CR + 4, LORA_HAS_CRC,
-       (double)RF_FREQ_MHZ, LORA_TX_DBM, LORA_LBT, (unsigned long)toa_ms(80));
+       (double)RF_FREQ_MHZ, LORA_TX_DBM, (double)radio.getCurrentLimit(), LORA_LBT, (unsigned long)toa_ms(80));
   LOGF("[LORA] node=%s  frame_idle=%lums  pong_broadcast=%d\n",
        NODE_ID, (unsigned long)LORA_FRAME_IDLE_MS, LORA_PONG_BROADCAST);
 

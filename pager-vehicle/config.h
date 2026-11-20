@@ -131,6 +131,9 @@
 //   주파수는 플릿과 들리려면 lora_rf.h(922.0)를 따를 수밖에 없다 — README 참고.
 #define LORA_TX_DBM           22     // 2026-09-28 사용자 요청으로 22 dBm(experiment profile). 14 dBm에선 링크가 약했다.
                                      // ★ KR920 end-device EIRP 한도(14 dBm) 초과 — 실외·상시 운용이면 규정 위반 소지 (PROTOCOL §2)
+                                     // 2026-11-20: 그때까지 OCP 60 mA(RadioLib 기본) 때문에 14 → 실제 ~12.8, 22 → ~13.1 dBm이었다
+                                     // (T-Deck SDR 실측). 즉 "14가 약해서 22로" 올린 건 효과가 거의 없었다. lora.cpp가 OCP를
+                                     // 140 mA로 올린 뒤로 22는 실제 ~21.7 dBm, 송신 전류 ~118 mA(이전의 약 2배).
 #define LORA_LBT              1
 #define LORA_PONG_BROADCAST   0      // v1.21: 페이저는 주소지정 PING(<dst>=P01)에만 답한다
 
