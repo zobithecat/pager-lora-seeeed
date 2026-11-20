@@ -355,6 +355,11 @@ void lora_begin(bool hw_reset) {
   // Wio-SX1262: 안테나 스위치는 SX1262 내부 DIO2가 제어. CRC는 lora_rf.h를 따른다 —
   // explicit header가 CRC-present 비트를 싣기 때문에 노드별로 켜도 flag day가 아니다.
   radio.setDio2AsRfSwitch(true);
+  // RadioLib의 begin()은 PA 과전류 한도를 60 mA로 건다. 그대로 두면 LORA_TX_DBM이 얼마든 출력이
+  // +13 dBm 근처에서 잘린다 (T-Deck 전도 실측 2026-11-20: 설정 14·17·22가 모두 같은 레벨).
+  // 140 mA는 SX1262의 리셋 기본값이고 +22 dBm PA 설정이 요구하는 값이다. begin()을 부를 때마다
+  // 60 mA로 돌아가므로 여기(매 lora_begin)에서 올린다.
+  radio.setCurrentLimit(140.0);
 #ifdef LORA_RXEN_PIN
   // Wio-SX1262의 RF 스위치는 DIO2(TX 경로)만으로 끝나지 않는다: RX 경로 enable이 ESP32
   // GPIO에 따로 나와 있어 수신 중엔 HIGH로 잡아줘야 한다 (Meshtastic SX126X_RXEN=38과 동일).
